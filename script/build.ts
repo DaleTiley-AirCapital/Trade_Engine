@@ -4,7 +4,7 @@ import { rm, readFile } from "fs/promises";
 
 // server deps to bundle to reduce openat(2) syscalls
 // which helps cold start times
-// Note: drizzle-orm and drizzle-zod must remain external to avoid bundling migration code
+// Note: drizzle-orm, drizzle-zod, and pg must remain external to avoid bundling issues
 const allowlist = [
   "@google/generative-ai",
   "axios",
@@ -22,7 +22,6 @@ const allowlist = [
   "openai",
   "passport",
   "passport-local",
-  "pg",
   "stripe",
   "uuid",
   "ws",
