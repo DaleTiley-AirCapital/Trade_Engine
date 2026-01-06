@@ -1,0 +1,67 @@
+Starting Container
+npm warn config production Use `--omit=dev` instead.
+> rest-express@1.0.0 db:push
+> drizzle-kit push
+No config path provided, using default 'drizzle.config.ts'
+Reading config file '/app/drizzle.config.ts'
+DATABASE_URL, ensure the database is provisioned
+npm warn config production Use `--omit=dev` instead.
+> rest-express@1.0.0 db:push
+> drizzle-kit push
+No config path provided, using default 'drizzle.config.ts'
+Reading config file '/app/drizzle.config.ts'
+DATABASE_URL, ensure the database is provisioned
+npm warn config production Use `--omit=dev` instead.
+> rest-express@1.0.0 db:push
+> drizzle-kit push
+No config path provided, using default 'drizzle.config.ts'
+Reading config file '/app/drizzle.config.ts'
+DATABASE_URL, ensure the database is provisioned
+npm warn config production Use `--omit=dev` instead.
+> rest-express@1.0.0 db:push
+> drizzle-kit push
+No config path provided, using default 'drizzle.config.ts'
+Reading config file '/app/drizzle.config.ts'
+DATABASE_URL, ensure the database is provisioned
+npm warn config production Use `--omit=dev` instead.
+> rest-express@1.0.0 db:push
+> drizzle-kit push
+No config path provided, using default 'drizzle.config.ts'
+Reading config file '/app/drizzle.config.ts'
+DATABASE_URL, ensure the database is provisioned
+No config path provided, using default 'drizzle.config.ts'
+Reading config file '/app/drizzle.config.ts'
+DATABASE_URL, ensure the database is provisioned
+npm warn config production Use `--omit=dev` instead.
+> rest-express@1.0.0 db:push
+> drizzle-kit push
+npm warn config production Use `--omit=dev` instead.
+> rest-express@1.0.0 db:push
+> drizzle-kit push
+No config path provided, using default 'drizzle.config.ts'
+Reading config file '/app/drizzle.config.ts'
+DATABASE_URL, ensure the database is provisioned
+npm warn config production Use `--omit=dev` instead.
+> rest-express@1.0.0 db:push
+> drizzle-kit push
+No config path provided, using default 'drizzle.config.ts'
+Reading config file '/app/drizzle.config.ts'
+DATABASE_URL, ensure the database is provisioned
+> drizzle-kit push
+> rest-express@1.0.0 db:push
+No config path provided, using default 'drizzle.config.ts'
+Reading config file '/app/drizzle.config.ts'
+npm warn config production Use `--omit=dev` instead.
+DATABASE_URL, ensure the database is provisioned
+npm warn config production Use `--omit=dev` instead.
+> rest-express@1.0.0 db:push
+> drizzle-kit push
+DATABASE_URL, ensure the database is provisioned
+No config path provided, using default 'drizzle.config.ts'
+Reading config file '/app/drizzle.config.ts'
+npm warn config production Use `--omit=dev` instead.
+> rest-express@1.0.0 db:push
+> drizzle-kit push
+No config path provided, using default 'drizzle.config.ts'
+Reading config file '/app/drizzle.config.ts'
+DATABASE_URL, ensure the database is provisioned
