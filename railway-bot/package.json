@@ -10,8 +10,6 @@
     "db:push": "drizzle-kit push"
   },
   "dependencies": {
-    "@binance/connector-typescript": "^1.0.0",
-    "binance": "^2.13.0",
     "dotenv": "^16.4.5",
     "drizzle-orm": "^0.38.3",
     "pg": "^8.13.3",
