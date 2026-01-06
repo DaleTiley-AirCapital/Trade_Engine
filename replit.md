@@ -79,7 +79,39 @@ The dashboard reads from these tables (created by the bot):
 
 ## Bot Code Location
 
-The trading bot code is in the `railway-bot/` folder. Copy this to a separate GitHub repository and deploy to Railway.
+The trading bot code is in the `railway-bot/` folder. 
+
+**IMPORTANT: Changes to `railway-bot/` do NOT auto-deploy to Railway!**
+
+Railway and Replit are separate deployments:
+- **Replit** = Dashboard only (this workspace)
+- **Railway** = Trading bot (separate deployment)
+
+## Deploying Bot Changes to Railway
+
+When you modify files in `railway-bot/`, you must manually redeploy to Railway:
+
+### Option 1: GitHub Integration (Recommended)
+1. Copy updated `railway-bot/` files to your Railway GitHub repo
+2. Commit and push to the branch linked to Railway
+3. Railway will auto-build and redeploy
+
+### Option 2: Railway CLI
+```bash
+cd railway-bot
+railway login
+railway up
+```
+
+### Option 3: Railway Dashboard
+1. Go to Railway dashboard
+2. Select your bot service
+3. Click "Deploy" or trigger a manual redeploy
+
+### Verifying Deployment
+After redeploying, check the Signals page - you should see:
+- Non-zero Volume, Spread, Delta values
+- Criteria checks (Size, Volume, Spread, Momentum, Exhaustion) with proper pass/fail
 
 ## Development
 
