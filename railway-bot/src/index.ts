@@ -15,15 +15,16 @@ async function main() {
   // Validate environment
   const apiKey = process.env.BINANCE_API_KEY;
   const apiSecret = process.env.BINANCE_API_SECRET;
-  const tradingMode = process.env.TRADING_MODE || "paper";
   
   if (!apiKey || !apiSecret) {
     logger.error("BINANCE_API_KEY and BINANCE_API_SECRET are required");
     process.exit(1);
   }
   
-  const isLive = tradingMode === "live";
-  logger.info(`Trading mode: ${isLive ? "LIVE" : "PAPER"}`);
+  // Get trading mode from database (set by dashboard toggle)
+  let tradingMode = await getTradingModeFromDb();
+  let isLive = tradingMode === "live";
+  logger.info(`Trading mode: ${isLive ? "LIVE" : "PAPER"} (from database)`);
   
   // Load config from database or use defaults
   let config = await loadConfig();
@@ -48,6 +49,17 @@ async function main() {
   // Start the strategy
   await strategy.start();
   
+  // Periodically check if trading mode changed in database
+  setInterval(async () => {
+    const newMode = await getTradingModeFromDb();
+    if (newMode !== tradingMode) {
+      logger.warn(`Trading mode changed from ${tradingMode.toUpperCase()} to ${newMode.toUpperCase()}`);
+      tradingMode = newMode;
+      isLive = tradingMode === "live";
+      strategy.setLiveMode(isLive);
+    }
+  }, 5000); // Check every 5 seconds
+  
   // Graceful shutdown
   process.on("SIGINT", async () => {
     logger.info("Received SIGINT, shutting down...");
@@ -64,6 +76,18 @@ async function main() {
   });
   
   logger.info("Bot is running. Waiting for liquidation signals...");
+}
+
+async function getTradingModeFromDb(): Promise<"paper" | "live"> {
+  try {
+    const [state] = await db.select().from(botStates).orderBy(desc(botStates.id)).limit(1);
+    if (state?.tradingMode === "live") {
+      return "live";
+    }
+  } catch (err) {
+    logger.warn("Could not read trading mode from database, defaulting to paper");
+  }
+  return "paper";
 }
 
 async function loadConfig() {

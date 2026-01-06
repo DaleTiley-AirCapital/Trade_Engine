@@ -265,5 +265,31 @@ export async function registerRoutes(
     }
   });
 
+  // Trading mode toggle endpoint
+  app.post("/api/control/trading-mode", async (req, res) => {
+    try {
+      const { mode } = req.body;
+      
+      if (mode !== "paper" && mode !== "live") {
+        return res.status(400).json({ error: "Invalid mode. Must be 'paper' or 'live'" });
+      }
+      
+      const state = await storage.updateBotState({
+        tradingMode: mode,
+      });
+      
+      await storage.addLog({
+        timestamp: new Date().toISOString(),
+        level: mode === "live" ? "WARN" : "INFO",
+        message: `Trading mode changed to ${mode.toUpperCase()}`,
+        details: mode === "live" ? "CAUTION: Live mode will execute real trades!" : null,
+      });
+      
+      res.json({ success: true, state });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to update trading mode" });
+    }
+  });
+
   return httpServer;
 }

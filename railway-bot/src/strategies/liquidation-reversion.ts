@@ -486,6 +486,14 @@ export class LiquidationReversionStrategy {
     logger.info("Strategy resumed");
   }
   
+  setLiveMode(isLive: boolean) {
+    const wasLive = this.isLive;
+    this.isLive = isLive;
+    if (wasLive !== isLive) {
+      logger.info(`Trading mode updated: ${isLive ? "LIVE" : "PAPER"}`);
+    }
+  }
+  
   async flatten() {
     logger.warn("EMERGENCY FLATTEN - Closing all positions");
     

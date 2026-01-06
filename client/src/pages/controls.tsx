@@ -3,6 +3,8 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -30,6 +32,8 @@ import {
   WifiOff,
   Database,
   Server,
+  Zap,
+  FileText,
 } from "lucide-react";
 import type { BotState, HealthCheck } from "@shared/schema";
 
@@ -173,9 +177,34 @@ export default function Controls() {
     });
   };
 
+  const modeMutation = useMutation({
+    mutationFn: async (mode: "paper" | "live") => {
+      return apiRequest("POST", "/api/control/trading-mode", { mode });
+    },
+    onSuccess: (_, mode) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/state"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/overview"] });
+      toast({
+        title: mode === "live" ? "Live mode enabled" : "Paper mode enabled",
+        description: mode === "live" 
+          ? "The bot will now execute REAL trades!"
+          : "The bot will simulate trades without real execution.",
+        variant: mode === "live" ? "destructive" : "default",
+      });
+    },
+    onError: () => {
+      toast({
+        title: "Failed to change mode",
+        description: "There was an error changing the trading mode.",
+        variant: "destructive",
+      });
+    },
+  });
+
   const isRunning = botState?.status === "RUNNING";
   const isPaused = botState?.status === "PAUSED_MANUAL" || botState?.status === "PAUSED_RISK_LIMIT";
   const canResume = isPaused && botState?.status !== "PAUSED_RISK_LIMIT";
+  const isLiveMode = botState?.tradingMode === "live";
 
   if (stateLoading || healthLoading) {
     return (
@@ -192,6 +221,97 @@ export default function Controls() {
         <h1 className="text-2xl font-semibold">Controls</h1>
         {botState && <StatusBadge status={botState.status} size="lg" />}
       </div>
+
+      {/* Trading Mode Toggle */}
+      <Card className={cn("border-2", isLiveMode && "border-destructive")}>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-lg">
+            {isLiveMode ? (
+              <Zap className="h-5 w-5 text-destructive" />
+            ) : (
+              <FileText className="h-5 w-5 text-muted-foreground" />
+            )}
+            Trading Mode
+          </CardTitle>
+          <CardDescription>
+            Switch between paper trading and live trading
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <AlertDialog>
+            <div className="flex items-center justify-between">
+              <div className="space-y-1">
+                <Label className="text-base font-medium">
+                  {isLiveMode ? "Live Trading" : "Paper Trading"}
+                </Label>
+                <p className="text-sm text-muted-foreground">
+                  {isLiveMode 
+                    ? "Executing real trades on Binance Futures"
+                    : "Simulating trades without real execution"}
+                </p>
+              </div>
+              <div className="flex items-center gap-3">
+                <Badge 
+                  variant={isLiveMode ? "destructive" : "secondary"}
+                  className="gap-1"
+                >
+                  {isLiveMode ? (
+                    <>
+                      <Zap className="h-3 w-3" />
+                      LIVE
+                    </>
+                  ) : (
+                    <>
+                      <FileText className="h-3 w-3" />
+                      PAPER
+                    </>
+                  )}
+                </Badge>
+                <AlertDialogTrigger asChild>
+                  <Switch
+                    checked={isLiveMode}
+                    disabled={modeMutation.isPending}
+                    data-testid="switch-trading-mode"
+                  />
+                </AlertDialogTrigger>
+              </div>
+            </div>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>
+                  {isLiveMode ? "Switch to Paper Mode?" : "Switch to Live Mode?"}
+                </AlertDialogTitle>
+                <AlertDialogDescription>
+                  {isLiveMode ? (
+                    "Paper mode will simulate trades without executing real orders. Your account balance will not be affected."
+                  ) : (
+                    <span className="text-destructive font-medium">
+                      WARNING: Live mode will execute REAL trades using your Binance account! 
+                      Real money will be at risk. Only enable this if you are ready to trade with real funds.
+                    </span>
+                  )}
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel data-testid="button-mode-cancel">Cancel</AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={() => modeMutation.mutate(isLiveMode ? "paper" : "live")}
+                  className={cn(
+                    !isLiveMode && "bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                  )}
+                  data-testid="button-mode-confirm"
+                >
+                  {modeMutation.isPending 
+                    ? "Switching..." 
+                    : isLiveMode 
+                      ? "Switch to Paper" 
+                      : "Enable Live Trading"}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        </CardContent>
+      </Card>
 
       <div className="grid gap-6 lg:grid-cols-2">
         <Card className="border-2">
