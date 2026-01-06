@@ -19,7 +19,7 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
-import { Search, Filter, ChevronDown, FileText, AlertTriangle, AlertCircle, Info } from "lucide-react";
+import { Search, Filter, ChevronDown, FileText, AlertTriangle, AlertCircle, Info, Download } from "lucide-react";
 import type { LogEntry, LogLevel } from "@shared/schema";
 
 interface LogsResponse {
@@ -137,6 +137,33 @@ export default function Logs() {
   const [level, setLevel] = useState<string>("all");
   const [search, setSearch] = useState("");
   const [limit, setLimit] = useState(100);
+  const [isExporting, setIsExporting] = useState(false);
+
+  const handleExport = async () => {
+    setIsExporting(true);
+    try {
+      const params = new URLSearchParams();
+      if (level !== "all") params.set("level", level);
+      const url = `/api/logs/export${params.toString() ? `?${params.toString()}` : ""}`;
+      
+      const response = await fetch(url);
+      if (!response.ok) throw new Error("Export failed");
+      
+      const blob = await response.blob();
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = downloadUrl;
+      a.download = `trading_bot_logs_${new Date().toISOString().split("T")[0]}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(downloadUrl);
+    } catch (error) {
+      console.error("Export failed:", error);
+    } finally {
+      setIsExporting(false);
+    }
+  };
 
   const queryParams = new URLSearchParams();
   if (level !== "all") queryParams.set("level", level);
@@ -229,6 +256,16 @@ export default function Logs() {
         >
           <Filter className="h-4 w-4 mr-1" />
           Clear
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleExport}
+          disabled={isExporting}
+          data-testid="button-export-logs"
+        >
+          <Download className="h-4 w-4 mr-1" />
+          {isExporting ? "Exporting..." : "Export XLSX"}
         </Button>
       </div>
 

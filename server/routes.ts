@@ -2,6 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { z } from "zod";
+import * as XLSX from "xlsx";
 
 // Validation schema for config form values
 const configFormSchema = z.object({
@@ -119,6 +120,48 @@ export async function registerRoutes(
       res.json(result);
     } catch (error) {
       res.status(500).json({ error: "Failed to get logs" });
+    }
+  });
+
+  // Export logs to XLSX
+  app.get("/api/logs/export", async (req, res) => {
+    try {
+      const { level } = req.query;
+      const result = await storage.getLogs({
+        level: level as string | undefined,
+        limit: 10000, // Export up to 10k logs
+      });
+
+      const logs = result.logs.map((log) => ({
+        ID: log.id,
+        Timestamp: log.timestamp,
+        Level: log.level,
+        Message: log.message,
+        Details: log.details || "",
+      }));
+
+      const wb = XLSX.utils.book_new();
+      const ws = XLSX.utils.json_to_sheet(logs);
+      
+      // Set column widths
+      ws["!cols"] = [
+        { wch: 8 },   // ID
+        { wch: 24 },  // Timestamp
+        { wch: 8 },   // Level
+        { wch: 60 },  // Message
+        { wch: 40 },  // Details
+      ];
+      
+      XLSX.utils.book_append_sheet(wb, ws, "Logs");
+      
+      const buffer = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+      
+      const timestamp = new Date().toISOString().split("T")[0];
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      res.setHeader("Content-Disposition", `attachment; filename=trading_bot_logs_${timestamp}.xlsx`);
+      res.send(buffer);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to export logs" });
     }
   });
 
