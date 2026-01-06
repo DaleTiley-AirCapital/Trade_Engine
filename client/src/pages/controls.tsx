@@ -3,8 +3,6 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Switch } from "@/components/ui/switch";
-import { Label } from "@/components/ui/label";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -223,73 +221,76 @@ export default function Controls() {
       </div>
 
       {/* Trading Mode Toggle */}
-      <Card className={cn("border-2", isLiveMode && "border-destructive")}>
-        <CardHeader>
+      <Card className={cn(
+        "border-2",
+        isLiveMode ? "border-destructive bg-destructive/5" : "border-success bg-success/5"
+      )}>
+        <CardHeader className="pb-2">
           <CardTitle className="flex items-center gap-2 text-lg">
             {isLiveMode ? (
               <Zap className="h-5 w-5 text-destructive" />
             ) : (
-              <FileText className="h-5 w-5 text-muted-foreground" />
+              <FileText className="h-5 w-5 text-success" />
             )}
             Trading Mode
           </CardTitle>
-          <CardDescription>
-            Switch between paper trading and live trading
-          </CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
           <AlertDialog>
-            <div className="flex items-center justify-between">
-              <div className="space-y-1">
-                <Label className="text-base font-medium">
-                  {isLiveMode ? "Live Trading" : "Paper Trading"}
-                </Label>
-                <p className="text-sm text-muted-foreground">
-                  {isLiveMode 
-                    ? "Executing real trades on Binance Futures"
-                    : "Simulating trades without real execution"}
-                </p>
-              </div>
-              <div className="flex items-center gap-3">
-                <Badge 
-                  variant={isLiveMode ? "destructive" : "secondary"}
-                  className="gap-1"
-                >
+            <div className="flex items-center justify-between gap-4 p-4 rounded-md bg-background border">
+              <div className="flex items-center gap-4">
+                <div className={cn(
+                  "flex items-center justify-center w-12 h-12 rounded-full",
+                  isLiveMode ? "bg-destructive/20" : "bg-success/20"
+                )}>
                   {isLiveMode ? (
-                    <>
-                      <Zap className="h-3 w-3" />
-                      LIVE
-                    </>
+                    <Zap className="h-6 w-6 text-destructive" />
                   ) : (
-                    <>
-                      <FileText className="h-3 w-3" />
-                      PAPER
-                    </>
+                    <FileText className="h-6 w-6 text-success" />
                   )}
-                </Badge>
-                <AlertDialogTrigger asChild>
-                  <Switch
-                    checked={isLiveMode}
-                    disabled={modeMutation.isPending}
-                    data-testid="switch-trading-mode"
-                  />
-                </AlertDialogTrigger>
+                </div>
+                <div>
+                  <p className={cn(
+                    "text-lg font-semibold",
+                    isLiveMode ? "text-destructive" : "text-success"
+                  )}>
+                    {isLiveMode ? "LIVE TRADING" : "PAPER TRADING"}
+                  </p>
+                  <p className="text-sm text-muted-foreground">
+                    {isLiveMode 
+                      ? "Real money at risk - executing actual trades"
+                      : "Safe mode - simulating trades only"}
+                  </p>
+                </div>
               </div>
+              <AlertDialogTrigger asChild>
+                <Button 
+                  variant={isLiveMode ? "outline" : "destructive"}
+                  disabled={modeMutation.isPending}
+                  data-testid="button-toggle-mode"
+                >
+                  {isLiveMode ? "Switch to Paper" : "Go Live"}
+                </Button>
+              </AlertDialogTrigger>
             </div>
             <AlertDialogContent>
               <AlertDialogHeader>
                 <AlertDialogTitle>
                   {isLiveMode ? "Switch to Paper Mode?" : "Switch to Live Mode?"}
                 </AlertDialogTitle>
-                <AlertDialogDescription>
-                  {isLiveMode ? (
-                    "Paper mode will simulate trades without executing real orders. Your account balance will not be affected."
-                  ) : (
-                    <span className="text-destructive font-medium">
-                      WARNING: Live mode will execute REAL trades using your Binance account! 
-                      Real money will be at risk. Only enable this if you are ready to trade with real funds.
-                    </span>
-                  )}
+                <AlertDialogDescription asChild>
+                  <div>
+                    {isLiveMode ? (
+                      <p>Paper mode will simulate trades without executing real orders. Your account balance will not be affected.</p>
+                    ) : (
+                      <div className="space-y-2">
+                        <p className="text-destructive font-semibold">
+                          WARNING: Live mode will execute REAL trades!
+                        </p>
+                        <p>Real money will be at risk. Only enable this if you are ready to trade with real funds on Binance Futures.</p>
+                      </div>
+                    )}
+                  </div>
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
@@ -310,6 +311,10 @@ export default function Controls() {
               </AlertDialogFooter>
             </AlertDialogContent>
           </AlertDialog>
+          
+          <p className="text-xs text-muted-foreground">
+            The bot checks signals in real-time via WebSocket. When a liquidation event is detected, it evaluates conditions instantly.
+          </p>
         </CardContent>
       </Card>
 

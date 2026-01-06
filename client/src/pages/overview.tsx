@@ -1,13 +1,15 @@
 import { useQuery } from "@tanstack/react-query";
+import { useState, useEffect, useRef } from "react";
 import { StatusBadge } from "@/components/status-badge";
 import { MetricCard } from "@/components/metric-card";
 import { ProgressBar } from "@/components/progress-bar";
 import { OpenPositionCard } from "@/components/open-position-card";
 import { ChecklistCard } from "@/components/checklist-card";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import { Clock, AlertTriangle } from "lucide-react";
+import { Clock, AlertTriangle, Activity, TrendingUp, TrendingDown, Radio } from "lucide-react";
+import { cn } from "@/lib/utils";
 import type { BotState, Metrics, OpenPosition, ChecklistItem } from "@shared/schema";
 
 interface OverviewData {
@@ -31,6 +33,152 @@ function formatTimeAgo(timestamp: string): string {
   if (minutes < 60) return `${minutes}m ago`;
   const hours = Math.floor(minutes / 60);
   return `${hours}h ago`;
+}
+
+interface PriceData {
+  symbol: string;
+  price: number;
+  change24h: number;
+  lastUpdate: number;
+}
+
+function LivePriceStream() {
+  const [prices, setPrices] = useState<Map<string, PriceData>>(new Map());
+  const [isConnected, setIsConnected] = useState(false);
+  const [lastTick, setLastTick] = useState(0);
+  const wsRef = useRef<WebSocket | null>(null);
+  const symbols = ["btcusdt", "ethusdt"];
+
+  useEffect(() => {
+    const streams = symbols.map(s => `${s}@ticker`).join("/");
+    const ws = new WebSocket(`wss://fstream.binance.com/stream?streams=${streams}`);
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      setIsConnected(true);
+    };
+
+    ws.onmessage = (event) => {
+      const message = JSON.parse(event.data);
+      if (message.data) {
+        const ticker = message.data;
+        const symbol = ticker.s;
+        const price = parseFloat(ticker.c);
+        const change24h = parseFloat(ticker.P);
+        
+        setPrices(prev => {
+          const newMap = new Map(prev);
+          newMap.set(symbol, {
+            symbol,
+            price,
+            change24h,
+            lastUpdate: Date.now(),
+          });
+          return newMap;
+        });
+        setLastTick(Date.now());
+      }
+    };
+
+    ws.onerror = () => {
+      setIsConnected(false);
+    };
+
+    ws.onclose = () => {
+      setIsConnected(false);
+    };
+
+    return () => {
+      ws.close();
+    };
+  }, []);
+
+  const formatPrice = (price: number, symbol: string) => {
+    if (symbol.includes("BTC")) {
+      return price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+    return price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  };
+
+  const getTimeSinceUpdate = () => {
+    if (lastTick === 0) return "Connecting...";
+    const seconds = Math.floor((Date.now() - lastTick) / 1000);
+    if (seconds < 1) return "Just now";
+    if (seconds < 60) return `${seconds}s ago`;
+    return "Stale";
+  };
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <div className="flex items-center justify-between gap-2">
+          <CardTitle className="flex items-center gap-2 text-lg">
+            <Activity className="h-5 w-5" />
+            Live Market Prices
+          </CardTitle>
+          <Badge 
+            variant={isConnected ? "outline" : "destructive"}
+            className="gap-1"
+          >
+            <Radio className={cn("h-3 w-3", isConnected && "animate-pulse text-success")} />
+            {isConnected ? "Streaming" : "Disconnected"}
+          </Badge>
+        </div>
+        <CardDescription>
+          Real-time prices from Binance Futures WebSocket
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="grid gap-3 sm:grid-cols-2">
+          {symbols.map(s => {
+            const symbol = s.toUpperCase();
+            const data = prices.get(symbol);
+            const isPositive = data && data.change24h >= 0;
+            
+            return (
+              <div 
+                key={symbol}
+                className="flex items-center justify-between p-3 rounded-md bg-muted/50 border"
+                data-testid={`price-${symbol}`}
+              >
+                <div className="flex items-center gap-3">
+                  <div className="flex flex-col">
+                    <span className="font-semibold">{symbol.replace("USDT", "")}</span>
+                    <span className="text-xs text-muted-foreground">Perpetual</span>
+                  </div>
+                </div>
+                <div className="text-right">
+                  {data ? (
+                    <>
+                      <p className="font-mono text-lg font-semibold">
+                        ${formatPrice(data.price, symbol)}
+                      </p>
+                      <div className={cn(
+                        "flex items-center gap-1 text-xs justify-end",
+                        isPositive ? "text-success" : "text-destructive"
+                      )}>
+                        {isPositive ? (
+                          <TrendingUp className="h-3 w-3" />
+                        ) : (
+                          <TrendingDown className="h-3 w-3" />
+                        )}
+                        <span>{isPositive ? "+" : ""}{data.change24h.toFixed(2)}%</span>
+                      </div>
+                    </>
+                  ) : (
+                    <Skeleton className="h-6 w-24" />
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <p className="text-xs text-muted-foreground mt-3 text-center">
+          Last update: {getTimeSinceUpdate()} | Signals evaluated instantly on liquidation events
+        </p>
+      </CardContent>
+    </Card>
+  );
 }
 
 function OverviewSkeleton() {
@@ -139,6 +287,8 @@ export default function Overview() {
           testId="metric-winrate"
         />
       </div>
+
+      <LivePriceStream />
 
       <OpenPositionCard position={openPosition} />
 
