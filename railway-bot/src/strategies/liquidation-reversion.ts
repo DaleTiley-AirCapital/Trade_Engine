@@ -119,46 +119,47 @@ export class LiquidationReversionStrategy {
     const symbol = liq.symbol;
     if (!this.config.symbols.includes(symbol)) return;
     
+    // Calculate spread and volume FIRST so we can log them for all events
+    const spreadBps = this.ws.getSpreadBps(symbol);
+    const avgVolume = this.getAverageVolume(symbol);
+    const recentVolume = this.getRecentVolume(symbol, 60);
+    const volumeMult = avgVolume > 0 ? recentVolume / avgVolume : 0;
+    
     // Check cooldown
     const cooldownUntil = this.symbolCooldowns.get(symbol) || 0;
     if (Date.now() < cooldownUntil) {
-      await this.logMarketEvent(symbol, liq, false, "Symbol in cooldown");
+      await this.logMarketEvent(symbol, liq, false, "Symbol in cooldown", volumeMult, spreadBps);
       return;
     }
     
     // Check minimum liquidation size
     const minLiq = this.config.minLiqUsd[symbol] || 2000000;
     if (liq.usdValue < minLiq) {
-      await this.logMarketEvent(symbol, liq, false, "Liquidation size below threshold");
+      await this.logMarketEvent(symbol, liq, false, "Liquidation size below threshold", volumeMult, spreadBps);
       return;
     }
     
     // Check spread
-    const spreadBps = this.ws.getSpreadBps(symbol);
     const maxSpread = this.config.maxSpreadBps[symbol] || 4;
     if (spreadBps > maxSpread) {
-      await this.logMarketEvent(symbol, liq, false, "Spread too wide");
+      await this.logMarketEvent(symbol, liq, false, "Spread too wide", volumeMult, spreadBps);
       return;
     }
     
     // Check volume multiplier
-    const avgVolume = this.getAverageVolume(symbol);
-    const recentVolume = this.getRecentVolume(symbol, 60); // Last 60 seconds
-    const volumeMult = avgVolume > 0 ? recentVolume / avgVolume : 0;
-    
     if (volumeMult < this.config.volumeMult) {
-      await this.logMarketEvent(symbol, liq, false, `Volume multiplier ${volumeMult.toFixed(2)}x below threshold`);
+      await this.logMarketEvent(symbol, liq, false, `Volume multiplier ${volumeMult.toFixed(2)}x below threshold`, volumeMult, spreadBps);
       return;
     }
     
     // Check daily limits
     if (this.todayTradeCount >= this.config.maxTradesPerDay) {
-      await this.logMarketEvent(symbol, liq, false, "Daily trade limit reached");
+      await this.logMarketEvent(symbol, liq, false, "Daily trade limit reached", volumeMult, spreadBps);
       return;
     }
     
     if (this.consecutiveLosses >= this.config.maxConsecutiveLosses) {
-      await this.logMarketEvent(symbol, liq, false, "Consecutive losses limit reached");
+      await this.logMarketEvent(symbol, liq, false, "Consecutive losses limit reached", volumeMult, spreadBps);
       await this.updateBotState("PAUSED_RISK_LIMIT");
       this.isPaused = true;
       return;
@@ -166,7 +167,7 @@ export class LiquidationReversionStrategy {
     
     const dailyLossPct = Math.abs(Math.min(0, this.todayPnl)) / this.equity;
     if (dailyLossPct >= this.config.dailyMaxLossPct) {
-      await this.logMarketEvent(symbol, liq, false, "Daily loss limit reached");
+      await this.logMarketEvent(symbol, liq, false, "Daily loss limit reached", volumeMult, spreadBps);
       await this.updateBotState("PAUSED_RISK_LIMIT");
       this.isPaused = true;
       return;
