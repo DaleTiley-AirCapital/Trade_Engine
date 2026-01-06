@@ -71,7 +71,10 @@ interface SignalCardProps {
 
 function CriteriaCheck({ ok, label }: { ok: boolean; label: string }) {
   return (
-    <span className={cn("flex items-center gap-1", ok ? "text-success" : "text-destructive")}>
+    <span className={cn(
+      "flex items-center gap-1 font-medium",
+      ok ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"
+    )}>
       {ok ? <CheckCircle2 className="h-3 w-3" /> : <XCircle className="h-3 w-3" />}
       {label}
     </span>
