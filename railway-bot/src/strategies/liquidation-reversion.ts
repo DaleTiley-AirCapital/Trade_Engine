@@ -1,0 +1,468 @@
+import { BinanceWebSocket } from "../services/binance-ws";
+import { BinanceAPI } from "../services/binance-api";
+import { logger } from "../services/logger";
+import { db } from "../db";
+import { trades, marketEvents, metrics, botStates, healthChecks } from "../db/schema";
+import { eq, desc, and } from "drizzle-orm";
+
+interface LiquidationSignal {
+  symbol: string;
+  side: "BUY" | "SELL";
+  usdValue: number;
+  timestamp: number;
+}
+
+interface Config {
+  symbols: string[];
+  leverage: number;
+  riskPerTradePct: number;
+  dailyMaxLossPct: number;
+  maxTradesPerDay: number;
+  maxConsecutiveLosses: number;
+  liqWindowSeconds: number;
+  minLiqUsd: Record<string, number>;
+  volumeMult: number;
+  maxSpreadBps: Record<string, number>;
+  symbolCooldownSeconds: number;
+  tpPct: number;
+  slPct: number;
+  timeStopSeconds: number;
+  entryFillTimeoutMs: number;
+}
+
+export class LiquidationReversionStrategy {
+  private ws: BinanceWebSocket;
+  private api: BinanceAPI;
+  private config: Config;
+  private isPaused = false;
+  private isLive = false;
+  
+  // State tracking
+  private recentLiquidations: Map<string, LiquidationSignal[]> = new Map();
+  private recentVolumes: Map<string, number[]> = new Map();
+  private symbolCooldowns: Map<string, number> = new Map();
+  private openTrade: { symbol: string; entryPrice: number; side: "LONG" | "SHORT"; entryTime: number; tradeId: number } | null = null;
+  
+  // Daily metrics
+  private todayPnl = 0;
+  private todayTradeCount = 0;
+  private consecutiveLosses = 0;
+  private equity = 1400; // Starting equity in USDT
+  
+  constructor(ws: BinanceWebSocket, api: BinanceAPI, config: Config, isLive = false) {
+    this.ws = ws;
+    this.api = api;
+    this.config = config;
+    this.isLive = isLive;
+    
+    // Initialize tracking for each symbol
+    for (const symbol of config.symbols) {
+      this.recentLiquidations.set(symbol, []);
+      this.recentVolumes.set(symbol, []);
+    }
+  }
+  
+  async start() {
+    logger.info("Starting Liquidation Reversion Strategy");
+    
+    // Update bot state
+    await this.updateBotState("RUNNING");
+    await this.updateHealth(true, true, true);
+    
+    // Set leverage on all symbols
+    for (const symbol of this.config.symbols) {
+      try {
+        await this.api.setLeverage(symbol, this.config.leverage);
+      } catch (err) {
+        logger.warn(`Failed to set leverage for ${symbol}`, String(err));
+      }
+    }
+    
+    // Get initial equity
+    try {
+      this.equity = await this.api.getUsdtBalance();
+      logger.info(`Starting equity: $${this.equity.toFixed(2)}`);
+    } catch (err) {
+      logger.warn("Could not fetch initial balance, using default");
+    }
+    
+    // Listen for liquidation events
+    this.ws.on("liquidation", (liq: LiquidationSignal) => {
+      this.onLiquidation(liq);
+    });
+    
+    // Listen for trade updates for volume tracking
+    this.ws.on("trade", (trade: any) => {
+      this.onTrade(trade);
+    });
+    
+    // Start position monitoring loop
+    this.startPositionMonitor();
+    
+    // Start heartbeat
+    this.startHeartbeat();
+    
+    logger.info("Strategy started successfully");
+  }
+  
+  private async onLiquidation(liq: LiquidationSignal) {
+    if (this.isPaused) return;
+    if (this.openTrade) return; // Already in a trade
+    
+    const symbol = liq.symbol;
+    if (!this.config.symbols.includes(symbol)) return;
+    
+    // Check cooldown
+    const cooldownUntil = this.symbolCooldowns.get(symbol) || 0;
+    if (Date.now() < cooldownUntil) {
+      await this.logMarketEvent(symbol, liq, false, "Symbol in cooldown");
+      return;
+    }
+    
+    // Check minimum liquidation size
+    const minLiq = this.config.minLiqUsd[symbol] || 2000000;
+    if (liq.usdValue < minLiq) {
+      await this.logMarketEvent(symbol, liq, false, "Liquidation size below threshold");
+      return;
+    }
+    
+    // Check spread
+    const spreadBps = this.ws.getSpreadBps(symbol);
+    const maxSpread = this.config.maxSpreadBps[symbol] || 4;
+    if (spreadBps > maxSpread) {
+      await this.logMarketEvent(symbol, liq, false, "Spread too wide");
+      return;
+    }
+    
+    // Check volume multiplier
+    const avgVolume = this.getAverageVolume(symbol);
+    const recentVolume = this.getRecentVolume(symbol, 60); // Last 60 seconds
+    const volumeMult = avgVolume > 0 ? recentVolume / avgVolume : 0;
+    
+    if (volumeMult < this.config.volumeMult) {
+      await this.logMarketEvent(symbol, liq, false, `Volume multiplier ${volumeMult.toFixed(2)}x below threshold`);
+      return;
+    }
+    
+    // Check daily limits
+    if (this.todayTradeCount >= this.config.maxTradesPerDay) {
+      await this.logMarketEvent(symbol, liq, false, "Daily trade limit reached");
+      return;
+    }
+    
+    if (this.consecutiveLosses >= this.config.maxConsecutiveLosses) {
+      await this.logMarketEvent(symbol, liq, false, "Consecutive losses limit reached");
+      await this.updateBotState("PAUSED_RISK_LIMIT");
+      this.isPaused = true;
+      return;
+    }
+    
+    const dailyLossPct = Math.abs(Math.min(0, this.todayPnl)) / this.equity;
+    if (dailyLossPct >= this.config.dailyMaxLossPct) {
+      await this.logMarketEvent(symbol, liq, false, "Daily loss limit reached");
+      await this.updateBotState("PAUSED_RISK_LIMIT");
+      this.isPaused = true;
+      return;
+    }
+    
+    // Signal passed! Execute trade
+    logger.info(`SIGNAL PASSED: ${symbol} - Liq: $${(liq.usdValue / 1000000).toFixed(2)}M, Vol: ${volumeMult.toFixed(2)}x, Spread: ${spreadBps.toFixed(1)}bps`);
+    await this.logMarketEvent(symbol, liq, true, null, volumeMult, spreadBps);
+    
+    // Trade in opposite direction of liquidation
+    const tradeSide = liq.side === "BUY" ? "SHORT" : "LONG";
+    await this.enterTrade(symbol, tradeSide);
+  }
+  
+  private async enterTrade(symbol: string, side: "LONG" | "SHORT") {
+    const price = this.ws.getPrice(symbol);
+    if (!price) {
+      logger.error(`No price available for ${symbol}`);
+      return;
+    }
+    
+    // Calculate position size
+    const riskAmount = this.equity * this.config.riskPerTradePct;
+    const slDistance = price * this.config.slPct;
+    const quantity = riskAmount / slDistance;
+    
+    const orderSide = side === "LONG" ? "BUY" : "SELL";
+    
+    try {
+      const startTime = Date.now();
+      
+      // Use market order for fastest execution
+      const order = await this.api.marketOrder(symbol, orderSide, quantity);
+      
+      const executionTime = Date.now() - startTime;
+      const slippage = Math.abs(order.avgPrice - price) / price * 100;
+      
+      logger.info(`Trade opened: ${side} ${symbol} @ ${order.avgPrice} (slippage: ${slippage.toFixed(3)}%, exec: ${executionTime}ms)`);
+      
+      // Record trade in database
+      const [newTrade] = await db.insert(trades).values({
+        symbol,
+        side,
+        entryPrice: order.avgPrice,
+        quantity: order.executedQty,
+        isOpen: true,
+        setupId: `liq_${Date.now()}`,
+        slippageEst: slippage,
+      }).returning();
+      
+      this.openTrade = {
+        symbol,
+        entryPrice: order.avgPrice,
+        side,
+        entryTime: Date.now(),
+        tradeId: newTrade.id,
+      };
+      
+      // Set cooldown
+      this.symbolCooldowns.set(symbol, Date.now() + this.config.symbolCooldownSeconds * 1000);
+      
+      // Update metrics
+      this.todayTradeCount++;
+      await this.updateMetrics();
+      
+    } catch (err) {
+      logger.error(`Failed to enter trade: ${symbol} ${side}`, String(err));
+    }
+  }
+  
+  private startPositionMonitor() {
+    setInterval(async () => {
+      if (!this.openTrade) return;
+      
+      const { symbol, entryPrice, side, entryTime, tradeId } = this.openTrade;
+      const currentPrice = this.ws.getPrice(symbol);
+      if (!currentPrice) return;
+      
+      const pnlPct = side === "LONG"
+        ? (currentPrice - entryPrice) / entryPrice
+        : (entryPrice - currentPrice) / entryPrice;
+      
+      const timeInTrade = (Date.now() - entryTime) / 1000;
+      
+      // Check exit conditions
+      let exitReason: string | null = null;
+      
+      if (pnlPct >= this.config.tpPct) {
+        exitReason = "TP";
+      } else if (pnlPct <= -this.config.slPct) {
+        exitReason = "SL";
+      } else if (timeInTrade >= this.config.timeStopSeconds) {
+        exitReason = "TIME_STOP";
+      }
+      
+      if (exitReason) {
+        await this.exitTrade(exitReason);
+      }
+    }, 100); // Check every 100ms for fast exits
+  }
+  
+  private async exitTrade(exitReason: string) {
+    if (!this.openTrade) return;
+    
+    const { symbol, entryPrice, side, entryTime, tradeId } = this.openTrade;
+    const orderSide = side === "LONG" ? "SELL" : "BUY";
+    
+    try {
+      // Get current position
+      const positions = await this.api.getPositions();
+      const pos = positions.find(p => p.symbol === symbol);
+      
+      if (pos) {
+        const quantity = Math.abs(pos.positionAmt);
+        await this.api.marketOrder(symbol, orderSide, quantity);
+      }
+      
+      const exitPrice = this.ws.getPrice(symbol) || entryPrice;
+      const pnlPct = side === "LONG"
+        ? (exitPrice - entryPrice) / entryPrice
+        : (entryPrice - exitPrice) / entryPrice;
+      
+      const quantity = pos?.positionAmt ? Math.abs(pos.positionAmt) : 0;
+      const pnlUsdt = entryPrice * quantity * pnlPct;
+      const duration = Math.floor((Date.now() - entryTime) / 1000);
+      const fees = Math.abs(pnlUsdt) * 0.04;
+      
+      logger.info(`Trade closed: ${side} ${symbol} - PnL: $${pnlUsdt.toFixed(2)} (${(pnlPct * 100).toFixed(2)}%) - ${exitReason}`);
+      
+      // Update trade in database
+      await db.update(trades)
+        .set({
+          exitPrice,
+          pnlUsdt,
+          pnlPct,
+          duration,
+          fees,
+          exitReason,
+          exitTimestamp: new Date(),
+          isOpen: false,
+        })
+        .where(eq(trades.id, tradeId));
+      
+      // Update metrics
+      this.todayPnl += pnlUsdt;
+      if (pnlUsdt >= 0) {
+        this.consecutiveLosses = 0;
+      } else {
+        this.consecutiveLosses++;
+      }
+      
+      await this.updateMetrics();
+      
+      this.openTrade = null;
+      
+    } catch (err) {
+      logger.error(`Failed to exit trade`, String(err));
+    }
+  }
+  
+  private onTrade(trade: any) {
+    const symbol = trade.symbol;
+    const volumes = this.recentVolumes.get(symbol) || [];
+    volumes.push(trade.quantity * trade.price);
+    
+    // Keep last 1000 trades
+    if (volumes.length > 1000) {
+      volumes.shift();
+    }
+    
+    this.recentVolumes.set(symbol, volumes);
+  }
+  
+  private getAverageVolume(symbol: string): number {
+    const volumes = this.recentVolumes.get(symbol) || [];
+    if (volumes.length === 0) return 0;
+    return volumes.reduce((a, b) => a + b, 0) / volumes.length;
+  }
+  
+  private getRecentVolume(symbol: string, seconds: number): number {
+    const volumes = this.recentVolumes.get(symbol) || [];
+    // Approximate: take last N samples
+    const samples = Math.min(volumes.length, seconds * 10);
+    const recent = volumes.slice(-samples);
+    return recent.reduce((a, b) => a + b, 0) / Math.max(1, samples);
+  }
+  
+  private async logMarketEvent(
+    symbol: string,
+    liq: LiquidationSignal,
+    passed: boolean,
+    rejectionReason: string | null,
+    volumeMult = 0,
+    spreadBps = 0
+  ) {
+    await db.insert(marketEvents).values({
+      symbol,
+      liquidationUsd: liq.usdValue,
+      liquidationSide: liq.side === "BUY" ? "LONG" : "SHORT",
+      volumeMult,
+      spreadBps,
+      passed,
+      rejectionReason,
+    });
+  }
+  
+  private async updateBotState(status: string) {
+    const [existing] = await db.select().from(botStates).orderBy(desc(botStates.id)).limit(1);
+    
+    if (existing) {
+      await db.update(botStates).set({
+        status,
+        lastHeartbeat: new Date(),
+        tradingMode: this.isLive ? "live" : "paper",
+      }).where(eq(botStates.id, existing.id));
+    } else {
+      await db.insert(botStates).values({
+        status,
+        tradingMode: this.isLive ? "live" : "paper",
+      });
+    }
+  }
+  
+  private async updateHealth(api: boolean, ws: boolean, dbConn: boolean) {
+    const [existing] = await db.select().from(healthChecks).orderBy(desc(healthChecks.id)).limit(1);
+    
+    const healthStatus = api && ws && dbConn ? "healthy" : "degraded";
+    
+    if (existing) {
+      await db.update(healthChecks).set({
+        status: healthStatus,
+        apiConnected: api,
+        wsConnected: ws,
+        dbConnected: dbConn,
+        lastCheck: new Date(),
+      }).where(eq(healthChecks.id, existing.id));
+    } else {
+      await db.insert(healthChecks).values({
+        status: healthStatus,
+        apiConnected: api,
+        wsConnected: ws,
+        dbConnected: dbConn,
+      });
+    }
+  }
+  
+  private async updateMetrics() {
+    const winCount = this.todayPnl > 0 ? 1 : 0;
+    const lossCount = this.todayPnl < 0 ? 1 : 0;
+    
+    const [existing] = await db.select().from(metrics).orderBy(desc(metrics.id)).limit(1);
+    
+    const metricsData = {
+      equityUsdt: this.equity + this.todayPnl,
+      equityZar: (this.equity + this.todayPnl) * 18.5,
+      todayPnlUsdt: this.todayPnl,
+      todayPnlPct: this.todayPnl / this.equity,
+      todayMaxDrawdownPct: Math.abs(Math.min(0, this.todayPnl)) / this.equity,
+      dailyLossRemaining: this.equity * this.config.dailyMaxLossPct - Math.abs(Math.min(0, this.todayPnl)),
+      tradesRemaining: this.config.maxTradesPerDay - this.todayTradeCount,
+      consecutiveLosses: this.consecutiveLosses,
+      todayTradeCount: this.todayTradeCount,
+      todayWinCount: winCount,
+      todayLossCount: lossCount,
+      winRate: this.todayTradeCount > 0 ? winCount / this.todayTradeCount : 0,
+      date: new Date(),
+    };
+    
+    if (existing) {
+      await db.update(metrics).set(metricsData).where(eq(metrics.id, existing.id));
+    } else {
+      await db.insert(metrics).values(metricsData);
+    }
+  }
+  
+  private startHeartbeat() {
+    setInterval(async () => {
+      await db.update(botStates)
+        .set({ lastHeartbeat: new Date() })
+        .where(eq(botStates.id, 1));
+      
+      await this.updateHealth(true, this.ws.connected, true);
+    }, 5000);
+  }
+  
+  async pause() {
+    this.isPaused = true;
+    await this.updateBotState("PAUSED_MANUAL");
+    logger.info("Strategy paused");
+  }
+  
+  async resume() {
+    this.isPaused = false;
+    await this.updateBotState("RUNNING");
+    logger.info("Strategy resumed");
+  }
+  
+  async flatten() {
+    logger.warn("EMERGENCY FLATTEN - Closing all positions");
+    await this.api.closeAllPositions();
+    if (this.openTrade) {
+      await this.exitTrade("FLATTEN");
+    }
+    await this.pause();
+  }
+}

@@ -1,418 +1,482 @@
-import { randomUUID } from "crypto";
-import type {
-  BotState,
-  Metrics,
-  OpenPosition,
-  Trade,
-  MarketEvent,
-  LogEntry,
-  Config,
-  ChecklistItem,
-  HealthCheck,
-  InsertTrade,
-  InsertMarketEvent,
-  InsertLogEntry,
+import { eq, desc, and, sql } from "drizzle-orm";
+import { db } from "./db";
+import {
+  botStates,
+  metrics,
+  trades,
+  marketEvents,
+  logEntries,
+  configs,
+  healthChecks,
+  type BotState,
+  type Metrics,
+  type OpenPosition,
+  type Trade,
+  type MarketEvent,
+  type LogEntry,
+  type Config,
+  type ChecklistItem,
+  type HealthCheck,
+  type InsertTrade,
+  type InsertMarketEvent,
+  type InsertLogEntry,
 } from "@shared/schema";
 
 export interface IStorage {
-  // Bot State
   getBotState(): Promise<BotState>;
   updateBotState(updates: Partial<BotState>): Promise<BotState>;
-  
-  // Metrics
   getMetrics(): Promise<Metrics>;
   updateMetrics(updates: Partial<Metrics>): Promise<Metrics>;
-  
-  // Open Position
   getOpenPosition(): Promise<OpenPosition | null>;
   setOpenPosition(position: OpenPosition | null): Promise<void>;
-  
-  // Trades
   getTrades(filters?: { symbol?: string; side?: string; exitReason?: string; page?: number; pageSize?: number }): Promise<{ trades: Trade[]; total: number }>;
   addTrade(trade: InsertTrade): Promise<Trade>;
-  
-  // Market Events
   getEvents(filters?: { symbol?: string; passed?: boolean }): Promise<{ events: MarketEvent[]; total: number }>;
   addEvent(event: InsertMarketEvent): Promise<MarketEvent>;
-  
-  // Logs
   getLogs(filters?: { level?: string; limit?: number }): Promise<{ logs: LogEntry[]; total: number }>;
   addLog(log: InsertLogEntry): Promise<LogEntry>;
-  
-  // Config
   getConfig(): Promise<Config>;
   updateConfig(config: Partial<Config>): Promise<Config>;
-  
-  // Checklist
   getChecklist(): Promise<ChecklistItem[]>;
-  
-  // Health
   getHealth(): Promise<HealthCheck>;
   updateHealth(health: Partial<HealthCheck>): Promise<HealthCheck>;
 }
 
-// Default config
-const defaultConfig: Config = {
-  version: 1,
-  mode: "paper",
-  symbols: ["BTCUSDT", "ETHUSDT"],
-  leverage: 2,
-  risk: {
-    risk_per_trade_pct: 0.0025,
-    daily_max_loss_pct: 0.015,
-    max_trades_per_day: 10,
-    max_consecutive_losses: 3,
-    pause_after_consecutive_losses_minutes: 60,
-    max_margin_per_trade_pct: 0.20,
-  },
-  signal: {
-    liq_window_seconds: 60,
-    min_liq_usd: {
-      BTCUSDT: 2500000,
-      ETHUSDT: 1250000,
-    },
-    volume_lookback: 20,
-    volume_mult: 2.0,
-    exhaustion_candles: 2,
-    max_spread_bps: {
-      BTCUSDT: 3,
-      ETHUSDT: 4,
-    },
-    symbol_cooldown_seconds: 300,
-  },
-  execution: {
-    tp_pct: 0.0035,
-    sl_pct: 0.0045,
-    time_stop_seconds: 150,
-    entry_fill_timeout_ms: 800,
-    use_market_if_not_filled: true,
-  },
-  feature_flags: {
-    enable_sol: false,
-    enable_momentum_variant: false,
-  },
-};
-
-// Sample data generators
-function generateSampleTrades(): Trade[] {
-  const symbols = ["BTCUSDT", "ETHUSDT"] as const;
-  const sides = ["LONG", "SHORT"] as const;
-  const exitReasons = ["TP", "SL", "TIME_STOP"] as const;
-  const trades: Trade[] = [];
-  
-  const now = new Date();
-  for (let i = 0; i < 25; i++) {
-    const symbol = symbols[Math.floor(Math.random() * symbols.length)];
-    const side = sides[Math.floor(Math.random() * sides.length)];
-    const exitReason = exitReasons[Math.floor(Math.random() * exitReasons.length)];
-    const isWin = exitReason === "TP";
-    const pnlPct = isWin ? 0.0025 + Math.random() * 0.002 : -(0.003 + Math.random() * 0.002);
-    const entryPrice = symbol === "BTCUSDT" ? 95000 + Math.random() * 2000 : 3400 + Math.random() * 100;
-    const exitPrice = entryPrice * (1 + pnlPct);
-    const quantity = symbol === "BTCUSDT" ? 0.01 + Math.random() * 0.02 : 0.5 + Math.random() * 1;
-    const pnlUsdt = entryPrice * quantity * pnlPct;
-    
-    const entryTime = new Date(now.getTime() - i * 3600000 - Math.random() * 1800000);
-    const duration = 30 + Math.floor(Math.random() * 120);
-    const exitTime = new Date(entryTime.getTime() + duration * 1000);
-    
-    trades.push({
-      id: randomUUID(),
-      symbol,
-      side,
-      entryPrice,
-      exitPrice,
-      quantity,
-      pnlUsdt,
-      pnlPct,
-      duration,
-      fees: Math.abs(pnlUsdt) * 0.04,
-      slippageEst: Math.random() * 0.5,
-      exitReason,
-      entryTimestamp: entryTime.toISOString(),
-      exitTimestamp: exitTime.toISOString(),
-      setupId: `setup_${randomUUID().slice(0, 8)}`,
-    });
-  }
-  
-  return trades.sort((a, b) => 
-    new Date(b.entryTimestamp).getTime() - new Date(a.entryTimestamp).getTime()
-  );
-}
-
-function generateSampleEvents(): MarketEvent[] {
-  const symbols = ["BTCUSDT", "ETHUSDT"] as const;
-  const sides = ["LONG", "SHORT"] as const;
-  const events: MarketEvent[] = [];
-  
-  const now = new Date();
-  for (let i = 0; i < 30; i++) {
-    const symbol = symbols[Math.floor(Math.random() * symbols.length)];
-    const side = sides[Math.floor(Math.random() * sides.length)];
-    const liquidationUsd = symbol === "BTCUSDT" 
-      ? 1000000 + Math.random() * 4000000
-      : 500000 + Math.random() * 2000000;
-    const volumeMult = 1.5 + Math.random() * 3;
-    const spreadBps = 1 + Math.random() * 5;
-    const passed = volumeMult >= 2 && spreadBps <= 4 && 
-      liquidationUsd >= (symbol === "BTCUSDT" ? 2500000 : 1250000);
-    
-    events.push({
-      id: randomUUID(),
-      timestamp: new Date(now.getTime() - i * 1800000 - Math.random() * 900000).toISOString(),
-      symbol,
-      liquidationUsd,
-      liquidationSide: side,
-      volumeMult,
-      spreadBps,
-      passed,
-      rejectionReason: passed ? null : 
-        volumeMult < 2 ? "Volume multiplier below threshold" :
-        spreadBps > 4 ? "Spread too wide" :
-        "Liquidation size below threshold",
-    });
-  }
-  
-  return events.sort((a, b) => 
-    new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
-  );
-}
-
-function generateSampleLogs(): LogEntry[] {
-  const levels = ["INFO", "WARN", "ERROR"] as const;
-  const messages = {
-    INFO: [
-      "Bot started successfully",
-      "Connected to Binance API",
-      "WebSocket stream connected",
-      "Processing liquidation event",
-      "Trade executed successfully",
-      "Daily metrics reset",
-      "Configuration updated",
-      "Health check passed",
-    ],
-    WARN: [
-      "High latency detected on WebSocket stream",
-      "Approaching daily loss limit",
-      "Spread above threshold, skipping signal",
-      "Volume confirmation failed",
-      "Order fill timeout, switching to market",
-    ],
-    ERROR: [
-      "WebSocket connection lost, reconnecting...",
-      "Failed to fetch account balance",
-      "Order placement failed: insufficient margin",
-    ],
-  };
-  
-  const logs: LogEntry[] = [];
-  const now = new Date();
-  
-  for (let i = 0; i < 100; i++) {
-    const level = levels[Math.floor(Math.random() * levels.length)];
-    const levelMessages = messages[level];
-    const message = levelMessages[Math.floor(Math.random() * levelMessages.length)];
-    
-    logs.push({
-      id: randomUUID(),
-      timestamp: new Date(now.getTime() - i * 300000 - Math.random() * 150000).toISOString(),
-      level,
-      message,
-      details: level === "ERROR" ? `Stack trace:\n  at processSignal (/app/bot/strategy.ts:142)\n  at handleLiquidation (/app/bot/events.ts:56)` : null,
-    });
-  }
-  
-  return logs.sort((a, b) => 
-    new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
-  );
-}
-
-export class MemStorage implements IStorage {
-  private botState: BotState;
-  private metrics: Metrics;
-  private openPosition: OpenPosition | null;
-  private trades: Trade[];
-  private events: MarketEvent[];
-  private logs: LogEntry[];
-  private config: Config;
-  private health: HealthCheck;
-
-  constructor() {
-    // Initialize with sample data
-    this.trades = generateSampleTrades();
-    this.events = generateSampleEvents();
-    this.logs = generateSampleLogs();
-    
-    // Calculate metrics from trades
-    const todayTrades = this.trades.filter(t => {
-      const tradeDate = new Date(t.entryTimestamp);
-      const today = new Date();
-      return tradeDate.toDateString() === today.toDateString();
-    });
-    
-    const wins = todayTrades.filter(t => t.pnlUsdt > 0);
-    const losses = todayTrades.filter(t => t.pnlUsdt <= 0);
-    const todayPnl = todayTrades.reduce((sum, t) => sum + t.pnlUsdt, 0);
-    
-    this.botState = {
-      id: randomUUID(),
-      status: "RUNNING",
-      lastHeartbeat: new Date().toISOString(),
-      lastError: null,
-      errorTimestamp: null,
-      tradingMode: "paper",
-      paperStartDate: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
-      paperTradesCount: this.trades.length,
-    };
-    
-    const equity = 1400; // ~R25000 in USDT
-    this.metrics = {
-      equityUsdt: equity,
-      equityZar: equity * 18.5,
-      todayPnlUsdt: todayPnl,
-      todayPnlPct: todayPnl / equity,
-      todayMaxDrawdownPct: 0.008,
-      dailyLossRemaining: equity * 0.015 - Math.abs(Math.min(0, todayPnl)),
-      tradesRemaining: 10 - todayTrades.length,
-      consecutiveLosses: 1,
-      todayTradeCount: todayTrades.length,
-      todayWinCount: wins.length,
-      todayLossCount: losses.length,
-      winRate: todayTrades.length > 0 ? wins.length / todayTrades.length : 0,
-    };
-    
-    this.openPosition = null;
-    this.config = defaultConfig;
-    
-    this.health = {
-      status: "healthy",
-      apiConnected: true,
-      wsConnected: true,
-      dbConnected: true,
-      lastCheck: new Date().toISOString(),
-    };
-  }
-
+export class DatabaseStorage implements IStorage {
   async getBotState(): Promise<BotState> {
-    // Update heartbeat
-    this.botState.lastHeartbeat = new Date().toISOString();
-    return this.botState;
+    const [state] = await db.select().from(botStates).orderBy(desc(botStates.id)).limit(1);
+    
+    if (!state) {
+      const [newState] = await db.insert(botStates).values({
+        status: "BOOTING",
+        tradingMode: "paper",
+        paperTradesCount: 0,
+      }).returning();
+      return this.formatBotState(newState);
+    }
+    
+    return this.formatBotState(state);
+  }
+
+  private formatBotState(state: typeof botStates.$inferSelect): BotState {
+    return {
+      id: state.id,
+      status: state.status,
+      lastHeartbeat: state.lastHeartbeat?.toISOString() || new Date().toISOString(),
+      lastError: state.lastError,
+      errorTimestamp: state.errorTimestamp?.toISOString() || null,
+      tradingMode: state.tradingMode,
+      paperStartDate: state.paperStartDate?.toISOString() || null,
+      paperTradesCount: state.paperTradesCount,
+    };
   }
 
   async updateBotState(updates: Partial<BotState>): Promise<BotState> {
-    this.botState = { ...this.botState, ...updates };
-    return this.botState;
+    const current = await this.getBotState();
+    
+    await db.update(botStates)
+      .set({
+        status: updates.status || current.status,
+        lastHeartbeat: new Date(),
+        lastError: updates.lastError !== undefined ? updates.lastError : current.lastError,
+        tradingMode: updates.tradingMode || current.tradingMode,
+        paperTradesCount: updates.paperTradesCount ?? current.paperTradesCount,
+      })
+      .where(eq(botStates.id, current.id));
+    
+    return this.getBotState();
   }
 
   async getMetrics(): Promise<Metrics> {
-    return this.metrics;
+    const [record] = await db.select().from(metrics).orderBy(desc(metrics.id)).limit(1);
+    
+    if (!record) {
+      return {
+        equityUsdt: 0,
+        equityZar: 0,
+        todayPnlUsdt: 0,
+        todayPnlPct: 0,
+        todayMaxDrawdownPct: 0,
+        dailyLossRemaining: 0,
+        tradesRemaining: 10,
+        consecutiveLosses: 0,
+        todayTradeCount: 0,
+        todayWinCount: 0,
+        todayLossCount: 0,
+        winRate: 0,
+      };
+    }
+    
+    return {
+      equityUsdt: record.equityUsdt,
+      equityZar: record.equityZar,
+      todayPnlUsdt: record.todayPnlUsdt,
+      todayPnlPct: record.todayPnlPct,
+      todayMaxDrawdownPct: record.todayMaxDrawdownPct,
+      dailyLossRemaining: record.dailyLossRemaining,
+      tradesRemaining: record.tradesRemaining,
+      consecutiveLosses: record.consecutiveLosses,
+      todayTradeCount: record.todayTradeCount,
+      todayWinCount: record.todayWinCount,
+      todayLossCount: record.todayLossCount,
+      winRate: record.winRate,
+    };
   }
 
   async updateMetrics(updates: Partial<Metrics>): Promise<Metrics> {
-    this.metrics = { ...this.metrics, ...updates };
-    return this.metrics;
+    const [existing] = await db.select().from(metrics).orderBy(desc(metrics.id)).limit(1);
+    
+    if (existing) {
+      await db.update(metrics).set({
+        ...updates,
+        date: new Date(),
+      }).where(eq(metrics.id, existing.id));
+    } else {
+      await db.insert(metrics).values({
+        equityUsdt: updates.equityUsdt ?? 0,
+        equityZar: updates.equityZar ?? 0,
+        todayPnlUsdt: updates.todayPnlUsdt ?? 0,
+        todayPnlPct: updates.todayPnlPct ?? 0,
+        todayMaxDrawdownPct: updates.todayMaxDrawdownPct ?? 0,
+        dailyLossRemaining: updates.dailyLossRemaining ?? 0,
+        tradesRemaining: updates.tradesRemaining ?? 10,
+        consecutiveLosses: updates.consecutiveLosses ?? 0,
+        todayTradeCount: updates.todayTradeCount ?? 0,
+        todayWinCount: updates.todayWinCount ?? 0,
+        todayLossCount: updates.todayLossCount ?? 0,
+        winRate: updates.winRate ?? 0,
+      });
+    }
+    
+    return this.getMetrics();
   }
 
   async getOpenPosition(): Promise<OpenPosition | null> {
-    return this.openPosition;
+    const [openTrade] = await db.select()
+      .from(trades)
+      .where(eq(trades.isOpen, true))
+      .orderBy(desc(trades.entryTimestamp))
+      .limit(1);
+    
+    if (!openTrade) return null;
+    
+    const entryTime = openTrade.entryTimestamp ? new Date(openTrade.entryTimestamp).getTime() : Date.now();
+    const timeInTrade = Math.floor((Date.now() - entryTime) / 1000);
+    
+    return {
+      id: openTrade.id,
+      symbol: openTrade.symbol,
+      side: openTrade.side,
+      entryPrice: openTrade.entryPrice,
+      quantity: openTrade.quantity,
+      unrealizedPnlUsdt: 0,
+      unrealizedPnlPct: 0,
+      entryTimestamp: openTrade.entryTimestamp?.toISOString() || new Date().toISOString(),
+      timeInTrade,
+    };
   }
 
   async setOpenPosition(position: OpenPosition | null): Promise<void> {
-    this.openPosition = position;
+    if (!position) {
+      await db.update(trades).set({ isOpen: false }).where(eq(trades.isOpen, true));
+    }
   }
 
   async getTrades(filters?: { symbol?: string; side?: string; exitReason?: string; page?: number; pageSize?: number }): Promise<{ trades: Trade[]; total: number }> {
-    let filteredTrades = [...this.trades];
+    const conditions = [eq(trades.isOpen, false)];
     
     if (filters?.symbol) {
-      filteredTrades = filteredTrades.filter(t => t.symbol === filters.symbol);
+      conditions.push(eq(trades.symbol, filters.symbol));
     }
     if (filters?.side) {
-      filteredTrades = filteredTrades.filter(t => t.side === filters.side);
+      conditions.push(eq(trades.side, filters.side));
     }
     if (filters?.exitReason) {
-      filteredTrades = filteredTrades.filter(t => t.exitReason === filters.exitReason);
+      conditions.push(eq(trades.exitReason, filters.exitReason));
     }
     
-    const total = filteredTrades.length;
+    const whereClause = conditions.length > 1 ? and(...conditions) : conditions[0];
+    
+    const [countResult] = await db.select({ count: sql<number>`count(*)` })
+      .from(trades)
+      .where(whereClause);
+    
     const page = filters?.page || 1;
     const pageSize = filters?.pageSize || 10;
-    const start = (page - 1) * pageSize;
-    const paginatedTrades = filteredTrades.slice(start, start + pageSize);
+    const offset = (page - 1) * pageSize;
     
-    return { trades: paginatedTrades, total };
+    const results = await db.select()
+      .from(trades)
+      .where(whereClause)
+      .orderBy(desc(trades.entryTimestamp))
+      .limit(pageSize)
+      .offset(offset);
+    
+    return {
+      trades: results.map(t => ({
+        id: t.id,
+        symbol: t.symbol,
+        side: t.side,
+        entryPrice: t.entryPrice,
+        exitPrice: t.exitPrice,
+        quantity: t.quantity,
+        pnlUsdt: t.pnlUsdt,
+        pnlPct: t.pnlPct,
+        duration: t.duration,
+        fees: t.fees,
+        slippageEst: t.slippageEst,
+        exitReason: t.exitReason,
+        entryTimestamp: t.entryTimestamp?.toISOString() || new Date().toISOString(),
+        exitTimestamp: t.exitTimestamp?.toISOString() || null,
+        setupId: t.setupId,
+      })),
+      total: Number(countResult?.count || 0),
+    };
   }
 
   async addTrade(trade: InsertTrade): Promise<Trade> {
-    const newTrade: Trade = {
-      ...trade,
-      id: randomUUID(),
+    const [newTrade] = await db.insert(trades).values(trade).returning();
+    return {
+      id: newTrade.id,
+      symbol: newTrade.symbol,
+      side: newTrade.side,
+      entryPrice: newTrade.entryPrice,
+      exitPrice: newTrade.exitPrice,
+      quantity: newTrade.quantity,
+      pnlUsdt: newTrade.pnlUsdt,
+      pnlPct: newTrade.pnlPct,
+      duration: newTrade.duration,
+      fees: newTrade.fees,
+      slippageEst: newTrade.slippageEst,
+      exitReason: newTrade.exitReason,
+      entryTimestamp: newTrade.entryTimestamp?.toISOString() || new Date().toISOString(),
+      exitTimestamp: newTrade.exitTimestamp?.toISOString() || null,
+      setupId: newTrade.setupId,
     };
-    this.trades.unshift(newTrade);
-    return newTrade;
   }
 
   async getEvents(filters?: { symbol?: string; passed?: boolean }): Promise<{ events: MarketEvent[]; total: number }> {
-    let filteredEvents = [...this.events];
+    const conditions: any[] = [];
     
     if (filters?.symbol) {
-      filteredEvents = filteredEvents.filter(e => e.symbol === filters.symbol);
+      conditions.push(eq(marketEvents.symbol, filters.symbol));
     }
     if (filters?.passed !== undefined) {
-      filteredEvents = filteredEvents.filter(e => e.passed === filters.passed);
+      conditions.push(eq(marketEvents.passed, filters.passed));
     }
     
-    return { events: filteredEvents, total: filteredEvents.length };
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+    
+    const [countResult] = await db.select({ count: sql<number>`count(*)` })
+      .from(marketEvents)
+      .where(whereClause);
+    
+    const results = await db.select()
+      .from(marketEvents)
+      .where(whereClause)
+      .orderBy(desc(marketEvents.timestamp))
+      .limit(100);
+    
+    return {
+      events: results.map(e => ({
+        id: e.id,
+        timestamp: e.timestamp?.toISOString() || new Date().toISOString(),
+        symbol: e.symbol,
+        liquidationUsd: e.liquidationUsd,
+        liquidationSide: e.liquidationSide,
+        volumeMult: e.volumeMult,
+        spreadBps: e.spreadBps,
+        passed: e.passed,
+        rejectionReason: e.rejectionReason,
+      })),
+      total: Number(countResult?.count || 0),
+    };
   }
 
   async addEvent(event: InsertMarketEvent): Promise<MarketEvent> {
-    const newEvent: MarketEvent = {
-      ...event,
-      id: randomUUID(),
+    const [newEvent] = await db.insert(marketEvents).values(event).returning();
+    return {
+      id: newEvent.id,
+      timestamp: newEvent.timestamp?.toISOString() || new Date().toISOString(),
+      symbol: newEvent.symbol,
+      liquidationUsd: newEvent.liquidationUsd,
+      liquidationSide: newEvent.liquidationSide,
+      volumeMult: newEvent.volumeMult,
+      spreadBps: newEvent.spreadBps,
+      passed: newEvent.passed,
+      rejectionReason: newEvent.rejectionReason,
     };
-    this.events.unshift(newEvent);
-    return newEvent;
   }
 
   async getLogs(filters?: { level?: string; limit?: number }): Promise<{ logs: LogEntry[]; total: number }> {
-    let filteredLogs = [...this.logs];
+    const conditions: any[] = [];
     
     if (filters?.level) {
-      filteredLogs = filteredLogs.filter(l => l.level === filters.level);
+      conditions.push(eq(logEntries.level, filters.level));
     }
     
-    const limit = filters?.limit || 100;
-    const paginatedLogs = filteredLogs.slice(0, limit);
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
     
-    return { logs: paginatedLogs, total: filteredLogs.length };
+    const [countResult] = await db.select({ count: sql<number>`count(*)` })
+      .from(logEntries)
+      .where(whereClause);
+    
+    const limit = filters?.limit || 100;
+    
+    const results = await db.select()
+      .from(logEntries)
+      .where(whereClause)
+      .orderBy(desc(logEntries.timestamp))
+      .limit(limit);
+    
+    return {
+      logs: results.map(l => ({
+        id: l.id,
+        timestamp: l.timestamp?.toISOString() || new Date().toISOString(),
+        level: l.level,
+        message: l.message,
+        details: l.details,
+      })),
+      total: Number(countResult?.count || 0),
+    };
   }
 
   async addLog(log: InsertLogEntry): Promise<LogEntry> {
-    const newLog: LogEntry = {
-      ...log,
-      id: randomUUID(),
+    const [newLog] = await db.insert(logEntries).values(log).returning();
+    return {
+      id: newLog.id,
+      timestamp: newLog.timestamp?.toISOString() || new Date().toISOString(),
+      level: newLog.level,
+      message: newLog.message,
+      details: newLog.details,
     };
-    this.logs.unshift(newLog);
-    return newLog;
   }
 
   async getConfig(): Promise<Config> {
-    return this.config;
+    const [record] = await db.select().from(configs).orderBy(desc(configs.id)).limit(1);
+    
+    if (!record) {
+      return this.getDefaultConfig();
+    }
+    
+    return {
+      version: record.version,
+      mode: record.mode,
+      symbols: record.symbols.split(","),
+      leverage: record.leverage,
+      risk: {
+        risk_per_trade_pct: record.riskPerTradePct,
+        daily_max_loss_pct: record.dailyMaxLossPct,
+        max_trades_per_day: record.maxTradesPerDay,
+        max_consecutive_losses: record.maxConsecutiveLosses,
+        pause_after_consecutive_losses_minutes: record.pauseAfterLossesMinutes,
+        max_margin_per_trade_pct: record.maxMarginPerTradePct,
+      },
+      signal: {
+        liq_window_seconds: record.liqWindowSeconds,
+        min_liq_usd: { BTCUSDT: 2500000, ETHUSDT: 1250000 },
+        volume_lookback: record.volumeLookback,
+        volume_mult: record.volumeMult,
+        exhaustion_candles: record.exhaustionCandles,
+        max_spread_bps: { BTCUSDT: 3, ETHUSDT: 4 },
+        symbol_cooldown_seconds: record.symbolCooldownSeconds,
+      },
+      execution: {
+        tp_pct: record.tpPct,
+        sl_pct: record.slPct,
+        time_stop_seconds: record.timeStopSeconds,
+        entry_fill_timeout_ms: record.entryFillTimeoutMs,
+        use_market_if_not_filled: record.useMarketIfNotFilled,
+      },
+      feature_flags: {
+        enable_sol: record.enableSol,
+        enable_momentum_variant: record.enableMomentumVariant,
+      },
+    };
+  }
+
+  private getDefaultConfig(): Config {
+    return {
+      version: 1,
+      mode: "paper",
+      symbols: ["BTCUSDT", "ETHUSDT"],
+      leverage: 2,
+      risk: {
+        risk_per_trade_pct: 0.0025,
+        daily_max_loss_pct: 0.015,
+        max_trades_per_day: 10,
+        max_consecutive_losses: 3,
+        pause_after_consecutive_losses_minutes: 60,
+        max_margin_per_trade_pct: 0.20,
+      },
+      signal: {
+        liq_window_seconds: 60,
+        min_liq_usd: { BTCUSDT: 2500000, ETHUSDT: 1250000 },
+        volume_lookback: 20,
+        volume_mult: 2.0,
+        exhaustion_candles: 2,
+        max_spread_bps: { BTCUSDT: 3, ETHUSDT: 4 },
+        symbol_cooldown_seconds: 300,
+      },
+      execution: {
+        tp_pct: 0.0035,
+        sl_pct: 0.0045,
+        time_stop_seconds: 150,
+        entry_fill_timeout_ms: 800,
+        use_market_if_not_filled: true,
+      },
+      feature_flags: {
+        enable_sol: false,
+        enable_momentum_variant: false,
+      },
+    };
   }
 
   async updateConfig(updates: Partial<Config>): Promise<Config> {
-    this.config = {
-      ...this.config,
-      ...updates,
-      version: this.config.version + 1,
+    const current = await this.getConfig();
+    
+    const [existing] = await db.select().from(configs).orderBy(desc(configs.id)).limit(1);
+    
+    const newConfig = {
+      version: (current.version || 0) + 1,
+      mode: updates.mode || current.mode,
+      symbols: (updates.symbols || current.symbols).join(","),
+      leverage: updates.leverage ?? current.leverage,
+      riskPerTradePct: updates.risk?.risk_per_trade_pct ?? current.risk.risk_per_trade_pct,
+      dailyMaxLossPct: updates.risk?.daily_max_loss_pct ?? current.risk.daily_max_loss_pct,
+      maxTradesPerDay: updates.risk?.max_trades_per_day ?? current.risk.max_trades_per_day,
+      maxConsecutiveLosses: updates.risk?.max_consecutive_losses ?? current.risk.max_consecutive_losses,
+      pauseAfterLossesMinutes: updates.risk?.pause_after_consecutive_losses_minutes ?? current.risk.pause_after_consecutive_losses_minutes,
+      maxMarginPerTradePct: updates.risk?.max_margin_per_trade_pct ?? current.risk.max_margin_per_trade_pct,
+      liqWindowSeconds: updates.signal?.liq_window_seconds ?? current.signal.liq_window_seconds,
+      volumeLookback: updates.signal?.volume_lookback ?? current.signal.volume_lookback,
+      volumeMult: updates.signal?.volume_mult ?? current.signal.volume_mult,
+      exhaustionCandles: updates.signal?.exhaustion_candles ?? current.signal.exhaustion_candles,
+      symbolCooldownSeconds: updates.signal?.symbol_cooldown_seconds ?? current.signal.symbol_cooldown_seconds,
+      tpPct: updates.execution?.tp_pct ?? current.execution.tp_pct,
+      slPct: updates.execution?.sl_pct ?? current.execution.sl_pct,
+      timeStopSeconds: updates.execution?.time_stop_seconds ?? current.execution.time_stop_seconds,
+      entryFillTimeoutMs: updates.execution?.entry_fill_timeout_ms ?? current.execution.entry_fill_timeout_ms,
+      useMarketIfNotFilled: updates.execution?.use_market_if_not_filled ?? current.execution.use_market_if_not_filled,
+      enableSol: updates.feature_flags?.enable_sol ?? current.feature_flags.enable_sol,
+      enableMomentumVariant: updates.feature_flags?.enable_momentum_variant ?? current.feature_flags.enable_momentum_variant,
+      updatedAt: new Date(),
     };
-    return this.config;
+    
+    if (existing) {
+      await db.update(configs).set(newConfig).where(eq(configs.id, existing.id));
+    } else {
+      await db.insert(configs).values(newConfig);
+    }
+    
+    return this.getConfig();
   }
 
   async getChecklist(): Promise<ChecklistItem[]> {
-    const state = this.botState;
-    const metrics = this.metrics;
-    const health = this.health;
+    const state = await this.getBotState();
+    const metricsData = await this.getMetrics();
+    const health = await this.getHealth();
+    const openPos = await this.getOpenPosition();
     
     return [
       {
@@ -427,7 +491,7 @@ export class MemStorage implements IStorage {
         label: "No risk limits hit",
         description: "Daily loss, consecutive losses",
         status: state.status === "PAUSED_RISK_LIMIT" ? "error" : 
-                metrics.consecutiveLosses >= 2 ? "warning" : "ok",
+                metricsData.consecutiveLosses >= 2 ? "warning" : "ok",
         value: null,
       },
       {
@@ -441,35 +505,72 @@ export class MemStorage implements IStorage {
         id: "pnl",
         label: "PnL within expected band",
         description: "Today's performance",
-        status: metrics.todayPnlPct < -0.01 ? "error" :
-                metrics.todayPnlPct < 0 ? "warning" : "ok",
-        value: `${(metrics.todayPnlPct * 100).toFixed(2)}%`,
+        status: metricsData.todayPnlPct < -0.01 ? "error" :
+                metricsData.todayPnlPct < 0 ? "warning" : "ok",
+        value: `${(metricsData.todayPnlPct * 100).toFixed(2)}%`,
       },
       {
         id: "positions",
         label: "Open positions manageable",
         description: "Current exposure",
         status: "ok",
-        value: this.openPosition ? "1 open" : "None",
+        value: openPos ? "1 open" : "None",
       },
       {
         id: "trades",
         label: "Trade count and win rate",
         description: "Last 24 hours",
-        status: metrics.winRate >= 0.5 ? "ok" : "warning",
-        value: `${metrics.todayTradeCount} trades, ${(metrics.winRate * 100).toFixed(0)}% WR`,
+        status: metricsData.winRate >= 0.5 ? "ok" : metricsData.todayTradeCount > 0 ? "warning" : "ok",
+        value: `${metricsData.todayTradeCount} trades, ${(metricsData.winRate * 100).toFixed(0)}% WR`,
       },
     ];
   }
 
   async getHealth(): Promise<HealthCheck> {
-    return this.health;
+    const [record] = await db.select().from(healthChecks).orderBy(desc(healthChecks.id)).limit(1);
+    
+    if (!record) {
+      return {
+        status: "healthy",
+        apiConnected: false,
+        wsConnected: false,
+        dbConnected: true,
+        lastCheck: new Date().toISOString(),
+      };
+    }
+    
+    return {
+      status: record.status,
+      apiConnected: record.apiConnected,
+      wsConnected: record.wsConnected,
+      dbConnected: record.dbConnected,
+      lastCheck: record.lastCheck?.toISOString() || new Date().toISOString(),
+    };
   }
 
   async updateHealth(updates: Partial<HealthCheck>): Promise<HealthCheck> {
-    this.health = { ...this.health, ...updates, lastCheck: new Date().toISOString() };
-    return this.health;
+    const [existing] = await db.select().from(healthChecks).orderBy(desc(healthChecks.id)).limit(1);
+    
+    if (existing) {
+      await db.update(healthChecks).set({
+        status: updates.status || existing.status,
+        apiConnected: updates.apiConnected ?? existing.apiConnected,
+        wsConnected: updates.wsConnected ?? existing.wsConnected,
+        dbConnected: updates.dbConnected ?? existing.dbConnected,
+        lastCheck: new Date(),
+      }).where(eq(healthChecks.id, existing.id));
+    } else {
+      await db.insert(healthChecks).values({
+        status: updates.status || "healthy",
+        apiConnected: updates.apiConnected ?? false,
+        wsConnected: updates.wsConnected ?? false,
+        dbConnected: updates.dbConnected ?? true,
+        lastCheck: new Date(),
+      });
+    }
+    
+    return this.getHealth();
   }
 }
 
-export const storage = new MemStorage();
+export const storage = new DatabaseStorage();

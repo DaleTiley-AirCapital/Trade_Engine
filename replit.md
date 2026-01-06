@@ -1,34 +1,34 @@
 # Trading Bot Dashboard
 
 ## Overview
-A real-time monitoring dashboard for an automated crypto trading bot that executes post-liquidation reversion strategies on Binance Futures. The dashboard provides comprehensive visibility into bot status, trades, market signals, configuration, and controls.
-
-## Current State
-- **Status**: MVP Complete
-- **Mode**: Paper Trading (simulated)
-- **Features**: All core dashboard functionality implemented
+A real-time monitoring dashboard for an automated crypto trading bot that executes post-liquidation reversion strategies on Binance Futures. The dashboard connects to a PostgreSQL database that is shared with the trading bot on Railway.
 
 ## Architecture
 
-### Frontend (React + TypeScript)
-- **Framework**: React with Vite
-- **Routing**: Wouter
-- **State Management**: TanStack Query v5
-- **UI Components**: shadcn/ui with Tailwind CSS
-- **Theme**: Dark/Light mode support with Inter font
+```
+Railway (Trading Bot)                Replit (Dashboard)
+┌─────────────────────┐              ┌─────────────────────┐
+│  Trading Bot        │              │  Dashboard Frontend │
+│  - Binance WS       │              │  - React + Vite     │
+│  - Trade Execution  │─────────────▶│  - Real-time UI     │
+│  - Signal Detection │   PostgreSQL │  - Monitoring       │
+└─────────────────────┘      ▲       └─────────────────────┘
+                             │
+                    Railway PostgreSQL
+                    (Shared Database)
+```
 
-### Backend (Express + TypeScript)
-- **Server**: Express.js
-- **Storage**: In-memory (MemStorage) with sample data
-- **API**: RESTful endpoints for all dashboard operations
+**Current Setup:**
+- **Replit**: Frontend dashboard only (reads from database)
+- **Railway**: Trading bot + PostgreSQL database (writes to database)
 
-### Data Models (shared/schema.ts)
-- `BotState`: Bot status, heartbeat, trading mode
-- `Metrics`: Equity, PnL, trade counts, win rate
-- `Trade`: Trade history with entry/exit details
-- `MarketEvent`: Liquidation signals and detection
-- `Config`: Strategy parameters and risk settings
-- `LogEntry`: System logs with levels
+## Connecting to Railway PostgreSQL
+
+To connect this dashboard to your Railway database:
+1. Get the PostgreSQL connection string from Railway dashboard
+2. Go to Replit Secrets tab
+3. Update `DATABASE_URL` with the Railway PostgreSQL connection string
+4. The dashboard will automatically read data from Railway's database
 
 ## Pages
 
@@ -66,33 +66,24 @@ A real-time monitoring dashboard for an automated crypto trading bot that execut
 - Emergency flatten (close all positions)
 - System health check
 
-## API Endpoints
+## Database Tables
 
-### GET Endpoints
-- `/api/health` - System health status
-- `/api/state` - Bot state
-- `/api/overview` - Combined dashboard data
-- `/api/metrics/today` - Today's metrics
-- `/api/trades` - Trade history (with filters)
-- `/api/events` - Market events (with filters)
-- `/api/logs` - System logs (with filters)
-- `/api/config/current` - Current configuration
+The dashboard reads from these tables (created by the bot):
+- `bot_states`: Bot status, heartbeat, trading mode
+- `metrics`: Equity, PnL, trade counts, win rate
+- `trades`: Complete trade history
+- `market_events`: Liquidation signals
+- `log_entries`: System logs
+- `configs`: Strategy configuration
+- `health_checks`: Connection status
 
-### POST Endpoints
-- `/api/config/publish` - Update configuration
-- `/api/control/pause` - Pause trading
-- `/api/control/resume` - Resume trading
-- `/api/control/flatten` - Emergency flatten
+## Bot Code Location
 
-## Design System
-- **Font**: Inter for UI, JetBrains Mono for code/logs
-- **Colors**: Custom success/warning colors for status
-- **Components**: shadcn/ui with consistent spacing
-- **Theme**: Dark mode default with light mode support
+The trading bot code is in the `railway-bot/` folder. Copy this to a separate GitHub repository and deploy to Railway.
 
 ## Development
 
-### Running the App
+### Running the Dashboard
 ```bash
 npm run dev
 ```
@@ -100,21 +91,20 @@ npm run dev
 ### File Structure
 ```
 client/src/
-├── components/     # Reusable UI components
+├── components/     # UI components
 ├── pages/         # Page components
 ├── hooks/         # Custom hooks
 ├── lib/           # Utilities
 server/
 ├── routes.ts      # API endpoints
-├── storage.ts     # In-memory storage
+├── storage.ts     # Database storage
+├── db.ts          # Database connection
 shared/
-├── schema.ts      # Type definitions
+├── schema.ts      # Drizzle schema
+railway-bot/       # Bot code for Railway deployment
 ```
 
-## Future Enhancements
-- Real Binance API integration
-- PostgreSQL persistence
-- WebSocket for real-time updates
-- Authentication (JWT-based)
-- Telegram/Slack notifications
-- Paper trading validation (14-day requirement)
+## Design System
+- **Font**: Inter for UI, JetBrains Mono for code/logs
+- **Theme**: Dark mode default with light mode support
+- **Components**: shadcn/ui with Tailwind CSS

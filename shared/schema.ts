@@ -1,6 +1,149 @@
+import { pgTable, text, integer, real, boolean, timestamp, varchar, serial } from "drizzle-orm/pg-core";
+import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
-// Bot States
+// Bot State Table
+export const botStates = pgTable("bot_states", {
+  id: serial("id").primaryKey(),
+  status: text("status").notNull().default("BOOTING"),
+  lastHeartbeat: timestamp("last_heartbeat").defaultNow(),
+  lastError: text("last_error"),
+  errorTimestamp: timestamp("error_timestamp"),
+  tradingMode: text("trading_mode").notNull().default("paper"),
+  paperStartDate: timestamp("paper_start_date"),
+  paperTradesCount: integer("paper_trades_count").notNull().default(0),
+});
+
+// Metrics Table (stores daily snapshots)
+export const metrics = pgTable("metrics", {
+  id: serial("id").primaryKey(),
+  date: timestamp("date").defaultNow(),
+  equityUsdt: real("equity_usdt").notNull().default(0),
+  equityZar: real("equity_zar").notNull().default(0),
+  todayPnlUsdt: real("today_pnl_usdt").notNull().default(0),
+  todayPnlPct: real("today_pnl_pct").notNull().default(0),
+  todayMaxDrawdownPct: real("today_max_drawdown_pct").notNull().default(0),
+  dailyLossRemaining: real("daily_loss_remaining").notNull().default(0),
+  tradesRemaining: integer("trades_remaining").notNull().default(10),
+  consecutiveLosses: integer("consecutive_losses").notNull().default(0),
+  todayTradeCount: integer("today_trade_count").notNull().default(0),
+  todayWinCount: integer("today_win_count").notNull().default(0),
+  todayLossCount: integer("today_loss_count").notNull().default(0),
+  winRate: real("win_rate").notNull().default(0),
+});
+
+// Trades Table
+export const trades = pgTable("trades", {
+  id: serial("id").primaryKey(),
+  symbol: text("symbol").notNull(),
+  side: text("side").notNull(),
+  entryPrice: real("entry_price").notNull(),
+  exitPrice: real("exit_price"),
+  quantity: real("quantity").notNull(),
+  pnlUsdt: real("pnl_usdt"),
+  pnlPct: real("pnl_pct"),
+  duration: integer("duration"),
+  fees: real("fees"),
+  slippageEst: real("slippage_est"),
+  exitReason: text("exit_reason"),
+  entryTimestamp: timestamp("entry_timestamp").defaultNow(),
+  exitTimestamp: timestamp("exit_timestamp"),
+  setupId: text("setup_id"),
+  isOpen: boolean("is_open").notNull().default(true),
+});
+
+// Market Events Table (liquidation signals)
+export const marketEvents = pgTable("market_events", {
+  id: serial("id").primaryKey(),
+  timestamp: timestamp("timestamp").defaultNow(),
+  symbol: text("symbol").notNull(),
+  liquidationUsd: real("liquidation_usd").notNull(),
+  liquidationSide: text("liquidation_side").notNull(),
+  volumeMult: real("volume_mult").notNull(),
+  spreadBps: real("spread_bps").notNull(),
+  passed: boolean("passed").notNull().default(false),
+  rejectionReason: text("rejection_reason"),
+});
+
+// Log Entries Table
+export const logEntries = pgTable("log_entries", {
+  id: serial("id").primaryKey(),
+  timestamp: timestamp("timestamp").defaultNow(),
+  level: text("level").notNull().default("INFO"),
+  message: text("message").notNull(),
+  details: text("details"),
+});
+
+// Config Table
+export const configs = pgTable("configs", {
+  id: serial("id").primaryKey(),
+  version: integer("version").notNull().default(1),
+  mode: text("mode").notNull().default("paper"),
+  symbols: text("symbols").notNull().default("BTCUSDT,ETHUSDT"),
+  leverage: integer("leverage").notNull().default(2),
+  riskPerTradePct: real("risk_per_trade_pct").notNull().default(0.0025),
+  dailyMaxLossPct: real("daily_max_loss_pct").notNull().default(0.015),
+  maxTradesPerDay: integer("max_trades_per_day").notNull().default(10),
+  maxConsecutiveLosses: integer("max_consecutive_losses").notNull().default(3),
+  pauseAfterLossesMinutes: integer("pause_after_losses_minutes").notNull().default(60),
+  maxMarginPerTradePct: real("max_margin_per_trade_pct").notNull().default(0.20),
+  liqWindowSeconds: integer("liq_window_seconds").notNull().default(60),
+  volumeLookback: integer("volume_lookback").notNull().default(20),
+  volumeMult: real("volume_mult").notNull().default(2.0),
+  exhaustionCandles: integer("exhaustion_candles").notNull().default(2),
+  symbolCooldownSeconds: integer("symbol_cooldown_seconds").notNull().default(300),
+  tpPct: real("tp_pct").notNull().default(0.0035),
+  slPct: real("sl_pct").notNull().default(0.0045),
+  timeStopSeconds: integer("time_stop_seconds").notNull().default(150),
+  entryFillTimeoutMs: integer("entry_fill_timeout_ms").notNull().default(800),
+  useMarketIfNotFilled: boolean("use_market_if_not_filled").notNull().default(true),
+  enableSol: boolean("enable_sol").notNull().default(false),
+  enableMomentumVariant: boolean("enable_momentum_variant").notNull().default(false),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+// Health Check Table
+export const healthChecks = pgTable("health_checks", {
+  id: serial("id").primaryKey(),
+  status: text("status").notNull().default("healthy"),
+  apiConnected: boolean("api_connected").notNull().default(false),
+  wsConnected: boolean("ws_connected").notNull().default(false),
+  dbConnected: boolean("db_connected").notNull().default(false),
+  lastCheck: timestamp("last_check").defaultNow(),
+});
+
+// Insert schemas
+export const insertBotStateSchema = createInsertSchema(botStates).omit({ id: true });
+export const insertMetricsSchema = createInsertSchema(metrics).omit({ id: true });
+export const insertTradeSchema = createInsertSchema(trades).omit({ id: true });
+export const insertMarketEventSchema = createInsertSchema(marketEvents).omit({ id: true });
+export const insertLogEntrySchema = createInsertSchema(logEntries).omit({ id: true });
+export const insertConfigSchema = createInsertSchema(configs).omit({ id: true });
+export const insertHealthCheckSchema = createInsertSchema(healthChecks).omit({ id: true });
+
+// Types
+export type BotStateRecord = typeof botStates.$inferSelect;
+export type InsertBotState = z.infer<typeof insertBotStateSchema>;
+
+export type MetricsRecord = typeof metrics.$inferSelect;
+export type InsertMetrics = z.infer<typeof insertMetricsSchema>;
+
+export type TradeRecord = typeof trades.$inferSelect;
+export type InsertTrade = z.infer<typeof insertTradeSchema>;
+
+export type MarketEventRecord = typeof marketEvents.$inferSelect;
+export type InsertMarketEvent = z.infer<typeof insertMarketEventSchema>;
+
+export type LogEntryRecord = typeof logEntries.$inferSelect;
+export type InsertLogEntry = z.infer<typeof insertLogEntrySchema>;
+
+export type ConfigRecord = typeof configs.$inferSelect;
+export type InsertConfig = z.infer<typeof insertConfigSchema>;
+
+export type HealthCheckRecord = typeof healthChecks.$inferSelect;
+export type InsertHealthCheck = z.infer<typeof insertHealthCheckSchema>;
+
+// Zod Enums for validation
 export const BotStateEnum = z.enum([
   "BOOTING",
   "RUNNING",
@@ -11,194 +154,152 @@ export const BotStateEnum = z.enum([
 ]);
 export type BotStateType = z.infer<typeof BotStateEnum>;
 
-// Trading Mode
 export const TradingModeEnum = z.enum(["paper", "live"]);
 export type TradingMode = z.infer<typeof TradingModeEnum>;
 
-// Symbol
 export const SymbolEnum = z.enum(["BTCUSDT", "ETHUSDT", "SOLUSDT"]);
 export type Symbol = z.infer<typeof SymbolEnum>;
 
-// Trade Side
 export const TradeSideEnum = z.enum(["LONG", "SHORT"]);
 export type TradeSide = z.infer<typeof TradeSideEnum>;
 
-// Exit Reason
 export const ExitReasonEnum = z.enum(["TP", "SL", "TIME_STOP", "MANUAL", "FLATTEN"]);
 export type ExitReason = z.infer<typeof ExitReasonEnum>;
 
-// Log Level
 export const LogLevelEnum = z.enum(["INFO", "WARN", "ERROR"]);
 export type LogLevel = z.infer<typeof LogLevelEnum>;
 
-// Bot State Schema
-export const botStateSchema = z.object({
-  id: z.string(),
-  status: BotStateEnum,
-  lastHeartbeat: z.string(),
-  lastError: z.string().nullable(),
-  errorTimestamp: z.string().nullable(),
-  tradingMode: TradingModeEnum,
-  paperStartDate: z.string().nullable(),
-  paperTradesCount: z.number(),
-});
-export type BotState = z.infer<typeof botStateSchema>;
+// API Response Types (for frontend)
+export interface BotState {
+  id: number;
+  status: string;
+  lastHeartbeat: string;
+  lastError: string | null;
+  errorTimestamp: string | null;
+  tradingMode: string;
+  paperStartDate: string | null;
+  paperTradesCount: number;
+}
 
-// Metrics Schema
-export const metricsSchema = z.object({
-  equityUsdt: z.number(),
-  equityZar: z.number(),
-  todayPnlUsdt: z.number(),
-  todayPnlPct: z.number(),
-  todayMaxDrawdownPct: z.number(),
-  dailyLossRemaining: z.number(),
-  tradesRemaining: z.number(),
-  consecutiveLosses: z.number(),
-  todayTradeCount: z.number(),
-  todayWinCount: z.number(),
-  todayLossCount: z.number(),
-  winRate: z.number(),
-});
-export type Metrics = z.infer<typeof metricsSchema>;
+export interface Metrics {
+  equityUsdt: number;
+  equityZar: number;
+  todayPnlUsdt: number;
+  todayPnlPct: number;
+  todayMaxDrawdownPct: number;
+  dailyLossRemaining: number;
+  tradesRemaining: number;
+  consecutiveLosses: number;
+  todayTradeCount: number;
+  todayWinCount: number;
+  todayLossCount: number;
+  winRate: number;
+}
 
-// Open Position Schema
-export const openPositionSchema = z.object({
-  id: z.string(),
-  symbol: SymbolEnum,
-  side: TradeSideEnum,
-  entryPrice: z.number(),
-  quantity: z.number(),
-  unrealizedPnlUsdt: z.number(),
-  unrealizedPnlPct: z.number(),
-  entryTimestamp: z.string(),
-  timeInTrade: z.number(), // seconds
-});
-export type OpenPosition = z.infer<typeof openPositionSchema>;
+export interface OpenPosition {
+  id: number;
+  symbol: string;
+  side: string;
+  entryPrice: number;
+  quantity: number;
+  unrealizedPnlUsdt: number;
+  unrealizedPnlPct: number;
+  entryTimestamp: string;
+  timeInTrade: number;
+}
 
-// Trade Schema
-export const tradeSchema = z.object({
-  id: z.string(),
-  symbol: SymbolEnum,
-  side: TradeSideEnum,
-  entryPrice: z.number(),
-  exitPrice: z.number(),
-  quantity: z.number(),
-  pnlUsdt: z.number(),
-  pnlPct: z.number(),
-  duration: z.number(), // seconds
-  fees: z.number(),
-  slippageEst: z.number(),
-  exitReason: ExitReasonEnum,
-  entryTimestamp: z.string(),
-  exitTimestamp: z.string(),
-  setupId: z.string(),
-});
-export type Trade = z.infer<typeof tradeSchema>;
+export interface Trade {
+  id: number;
+  symbol: string;
+  side: string;
+  entryPrice: number;
+  exitPrice: number | null;
+  quantity: number;
+  pnlUsdt: number | null;
+  pnlPct: number | null;
+  duration: number | null;
+  fees: number | null;
+  slippageEst: number | null;
+  exitReason: string | null;
+  entryTimestamp: string;
+  exitTimestamp: string | null;
+  setupId: string | null;
+}
 
-// Market Event Schema (liquidation signals)
-export const marketEventSchema = z.object({
-  id: z.string(),
-  timestamp: z.string(),
-  symbol: SymbolEnum,
-  liquidationUsd: z.number(),
-  liquidationSide: TradeSideEnum,
-  volumeMult: z.number(),
-  spreadBps: z.number(),
-  passed: z.boolean(),
-  rejectionReason: z.string().nullable(),
-});
-export type MarketEvent = z.infer<typeof marketEventSchema>;
+export interface MarketEvent {
+  id: number;
+  timestamp: string;
+  symbol: string;
+  liquidationUsd: number;
+  liquidationSide: string;
+  volumeMult: number;
+  spreadBps: number;
+  passed: boolean;
+  rejectionReason: string | null;
+}
 
-// Log Entry Schema
-export const logEntrySchema = z.object({
-  id: z.string(),
-  timestamp: z.string(),
-  level: LogLevelEnum,
-  message: z.string(),
-  details: z.string().nullable(),
-});
-export type LogEntry = z.infer<typeof logEntrySchema>;
+export interface LogEntry {
+  id: number;
+  timestamp: string;
+  level: string;
+  message: string;
+  details: string | null;
+}
 
-// Risk Event Schema
-export const riskEventSchema = z.object({
-  id: z.string(),
-  timestamp: z.string(),
-  eventType: z.string(),
-  description: z.string(),
-  actionTaken: z.string(),
-});
-export type RiskEvent = z.infer<typeof riskEventSchema>;
+export interface Config {
+  version: number;
+  mode: string;
+  symbols: string[];
+  leverage: number;
+  risk: {
+    risk_per_trade_pct: number;
+    daily_max_loss_pct: number;
+    max_trades_per_day: number;
+    max_consecutive_losses: number;
+    pause_after_consecutive_losses_minutes: number;
+    max_margin_per_trade_pct: number;
+  };
+  signal: {
+    liq_window_seconds: number;
+    min_liq_usd: Record<string, number>;
+    volume_lookback: number;
+    volume_mult: number;
+    exhaustion_candles: number;
+    max_spread_bps: Record<string, number>;
+    symbol_cooldown_seconds: number;
+  };
+  execution: {
+    tp_pct: number;
+    sl_pct: number;
+    time_stop_seconds: number;
+    entry_fill_timeout_ms: number;
+    use_market_if_not_filled: boolean;
+  };
+  feature_flags: {
+    enable_sol: boolean;
+    enable_momentum_variant: boolean;
+  };
+}
 
-// Config Schema
-export const configSchema = z.object({
-  version: z.number(),
-  mode: TradingModeEnum,
-  symbols: z.array(SymbolEnum),
-  leverage: z.number().min(1).max(3),
-  risk: z.object({
-    risk_per_trade_pct: z.number().min(0.001).max(0.01),
-    daily_max_loss_pct: z.number().min(0.005).max(0.05),
-    max_trades_per_day: z.number().min(1).max(20),
-    max_consecutive_losses: z.number().min(1).max(10),
-    pause_after_consecutive_losses_minutes: z.number().min(15).max(180),
-    max_margin_per_trade_pct: z.number().min(0.05).max(0.5),
-  }),
-  signal: z.object({
-    liq_window_seconds: z.number().min(30).max(120),
-    min_liq_usd: z.record(z.number()),
-    volume_lookback: z.number().min(10).max(50),
-    volume_mult: z.number().min(1.5).max(5),
-    exhaustion_candles: z.number().min(1).max(5),
-    max_spread_bps: z.record(z.number()),
-    symbol_cooldown_seconds: z.number().min(60).max(600),
-  }),
-  execution: z.object({
-    tp_pct: z.number().min(0.0025).max(0.0045),
-    sl_pct: z.number().min(0.0035).max(0.0050),
-    time_stop_seconds: z.number().min(120).max(180),
-    entry_fill_timeout_ms: z.number().min(200).max(2000),
-    use_market_if_not_filled: z.boolean(),
-  }),
-  feature_flags: z.object({
-    enable_sol: z.boolean(),
-    enable_momentum_variant: z.boolean(),
-  }),
-});
-export type Config = z.infer<typeof configSchema>;
+export interface HealthCheck {
+  status: string;
+  apiConnected: boolean;
+  wsConnected: boolean;
+  dbConnected: boolean;
+  lastCheck: string;
+}
 
-// Insert schemas for mutations
-export const insertTradeSchema = tradeSchema.omit({ id: true });
-export type InsertTrade = z.infer<typeof insertTradeSchema>;
-
-export const insertMarketEventSchema = marketEventSchema.omit({ id: true });
-export type InsertMarketEvent = z.infer<typeof insertMarketEventSchema>;
-
-export const insertLogEntrySchema = logEntrySchema.omit({ id: true });
-export type InsertLogEntry = z.infer<typeof insertLogEntrySchema>;
+export interface ChecklistItem {
+  id: string;
+  label: string;
+  description: string;
+  status: "ok" | "warning" | "error" | "pending";
+  value: string | null;
+}
 
 // Control Actions
 export const controlActionSchema = z.enum(["pause", "resume", "flatten"]);
 export type ControlAction = z.infer<typeof controlActionSchema>;
-
-// Health Check Response
-export const healthCheckSchema = z.object({
-  status: z.enum(["healthy", "degraded", "unhealthy"]),
-  apiConnected: z.boolean(),
-  wsConnected: z.boolean(),
-  dbConnected: z.boolean(),
-  lastCheck: z.string(),
-});
-export type HealthCheck = z.infer<typeof healthCheckSchema>;
-
-// Daily Checklist Item
-export const checklistItemSchema = z.object({
-  id: z.string(),
-  label: z.string(),
-  description: z.string(),
-  status: z.enum(["ok", "warning", "error", "pending"]),
-  value: z.string().nullable(),
-});
-export type ChecklistItem = z.infer<typeof checklistItemSchema>;
 
 // Legacy User types (keeping for compatibility)
 export interface User {
