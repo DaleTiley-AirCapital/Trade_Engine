@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "mode": "paper",
+  "symbols": ["BTCUSDT", "ETHUSDT"],
+  "leverage": 2,
+  "risk": {
+    "risk_per_trade_pct": 0.0025,
+    "daily_max_loss_pct": 0.015,
+    "max_trades_per_day": 10,
+    "max_consecutive_losses": 3,
+    "pause_after_consecutive_losses_minutes": 60,
+    "max_margin_per_trade_pct": 0.20
+  },
+  "signal": {
+    "liq_window_seconds": 60,
+    "min_liq_usd": {
+      "BTCUSDT": 2500000,
+      "ETHUSDT": 1250000
+    },
+    "volume_lookback": 20,
+    "volume_mult": 2.0,
+    "exhaustion_candles": 2,
+    "max_spread_bps": {
+      "BTCUSDT": 3,
+      "ETHUSDT": 4
+    },
+    "symbol_cooldown_seconds": 300
+  },
+  "execution": {
+    "tp_pct": 0.0035,
+    "sl_pct": 0.0045,
+    "time_stop_seconds": 150,
+    "entry_fill_timeout_ms": 800,
+    "use_market_if_not_filled": true
+  },
+  "feature_flags": {
+    "enable_sol": false,
+    "enable_momentum_variant": false
+  }
+}

@@ -1,0 +1,652 @@
+1. Objectives and Scope
+1.1 Primary objective
+
+Build a fully automated trading system that:
+
+monitors Binance Futures liquidation events in real time
+
+triggers trades only on post-liquidation exhaustion + reversion conditions
+
+executes with strict risk controls to prevent large drawdowns
+
+requires <30 minutes/day to check, with clear operational telemetry
+
+1.2 Out of scope (explicitly)
+
+no discretionary chart trading UI
+
+no manual “click to trade”
+
+no martingale / averaging down
+
+no “signal selling”
+
+no guarantee of returns; system must be expectation-managed
+
+2. Strategy Definition (Post-Liquidation Reversion)
+2.1 Markets and instruments
+
+Exchange: Binance
+
+Venue: USDT-M Perpetual Futures
+
+Allowed symbols (Phase 1): BTCUSDT, ETHUSDT
+
+Optional Phase 2: SOLUSDT (behind feature flag)
+
+2.2 Strategy type
+
+Post-liquidation reversion:
+
+detect liquidation spike (forced flow)
+
+wait for exhaustion (momentum decay + failure to extend)
+
+enter in direction of reversion (fade the spike)
+
+exit quickly with small TP, hard SL, and a time stop
+
+2.3 Trigger conditions (parameterized)
+
+A “setup” exists when all conditions pass:
+
+A) Liquidation spike
+
+Window: liq_window_seconds (default 60s)
+
+Thresholds:
+
+BTC: min_liq_usd_btc = 2_500_000
+
+ETH: min_liq_usd_eth = 1_250_000
+
+Liquidation side:
+
+Long liquidation spike → consider LONG reversion entry
+
+Short liquidation spike → consider SHORT reversion entry
+
+B) Volume confirmation
+
+Candle interval: 1m klines
+
+Condition: current_1m_volume >= volume_mult * avg_1m_volume(lookback)
+
+Defaults: volume_mult = 2.0, volume_lookback = 20
+
+C) Exhaustion / momentum decay
+Use 1m candles (or 5s/15s if available) to detect “slowing”.
+Minimum viable approach:
+
+Define impulse_move_pct from start of spike to local extreme
+
+Require a “failure to extend” pattern:
+
+at least exhaustion_candles = 2 candles that do not set a new extreme
+
+Optional enhancement:
+
+price velocity decay: abs(delta price) decreasing across last N intervals
+
+D) Spread / liquidity sanity
+
+Use orderbook best bid/ask.
+
+Condition: spread_bps <= max_spread_bps
+
+Default: max_spread_bps = 3 for BTC/ETH (tight)
+
+2.4 Entry rules
+
+One entry per setup (no scaling)
+
+Order type:
+
+Prefer LIMIT at best bid/ask with postOnly=false, short timeout
+
+If not filled within entry_fill_timeout_ms, switch to MARKET (configurable)
+
+Cooldown:
+
+After a trade: symbol_cooldown_seconds = 300 (5 min)
+
+2.5 Exit rules
+
+All are mandatory and applied immediately after fill:
+
+Take Profit (TP): tp_pct = 0.35% (config range 0.25–0.45)
+
+Stop Loss (SL): sl_pct = 0.45% (config range 0.35–0.50)
+
+Time Stop: exit at market if still open after:
+
+time_stop_seconds = 150 (range 120–180)
+
+2.6 Risk governance (hard kill-switches)
+
+These are non-negotiable.
+
+Max loss per trade (risk-based sizing): risk_per_trade_pct = 0.25%
+
+Daily max loss: daily_max_loss_pct = 1.5% → bot disables new entries until next day
+
+Max trades per day: max_trades_per_day = 10
+
+Consecutive loss limit: max_consecutive_losses = 3 → pause trading 60 min
+
+Per-symbol max concurrent positions: 1 (no hedged overlapping trades)
+
+Global max open positions: 1 (Phase 1)
+
+2.7 Leverage policy
+
+Default leverage: 2x (max allowed 3x)
+
+Enforced per symbol via Binance API on boot
+
+3. System Architecture (Railway)
+3.1 Services
+
+Deploy as two Railway services (recommended) or one monolith:
+
+bot-service (Python/Node)
+
+real-time liquidation stream consumer
+
+strategy engine
+
+execution engine
+
+risk governor
+
+writes telemetry + trade records to DB
+
+exposes a REST API for dashboard (read-only + limited controls)
+
+web-dashboard (Next.js)
+
+authenticated UI
+
+real-time status view + logs
+
+configuration editor (with validation)
+
+bot control actions (pause/resume, emergency flatten)
+
+3.2 Data store
+
+Use PostgreSQL on Railway.
+
+Tables (minimum):
+
+bot_config (versioned)
+
+trades
+
+positions (current and historical)
+
+risk_events
+
+bot_state (heartbeat, status, last_error)
+
+market_events (optional; store detected liquidation spikes)
+
+3.3 Messaging / real-time
+
+For the dashboard:
+
+Option A: polling every 3–5 seconds (simpler)
+
+Option B: WebSocket from bot-service to dashboard (better UX)
+
+3.4 Secrets and security
+
+Railway environment variables:
+
+BINANCE_API_KEY
+
+BINANCE_API_SECRET
+
+BINANCE_FUTURES_BASE_URL (default production)
+
+DATABASE_URL
+
+JWT_SECRET (dashboard auth)
+
+ADMIN_EMAIL (optional)
+
+ALERT_WEBHOOK_URL (Telegram/Slack optional)
+
+No secrets in client-side code.
+
+4. Binance Integration Details
+4.1 Market data sources
+
+Liquidations stream:
+
+Use Binance Futures websocket stream for liquidation events (force orders)
+
+Klines:
+
+REST or websocket for 1m candles
+
+Order book:
+
+Best bid/ask via bookTicker stream (preferred)
+
+4.2 Trading endpoints
+
+Set leverage per symbol at startup
+
+Place orders (limit/market)
+
+Query open positions
+
+Cancel orders
+
+Account balances / margin
+
+4.3 Permissions for API key
+
+Futures trading enabled
+
+Read account info enabled
+
+Withdrawals NOT required
+
+IP restrictions recommended once deployed (optional)
+
+5. Position Sizing Logic (R25,000 focus)
+5.1 Base currency
+
+Bot operates in USDT
+
+Dashboard shows ZAR equivalent for reporting only (manual FX input or external feed optional)
+
+5.2 Risk-based position sizing
+
+Inputs:
+
+equity_usdt (wallet balance + PnL)
+
+risk_per_trade_pct
+
+sl_pct
+
+leverage L
+
+Compute:
+
+risk_usdt = equity_usdt * risk_per_trade_pct
+
+Price: entry_price
+
+Stop distance: stop_distance = entry_price * sl_pct
+
+Position size in contracts: qty = risk_usdt / stop_distance
+
+Convert to exchange step size / tick size
+
+Check margin usage constraint:
+
+max_margin_per_trade_pct = 20% (default)
+
+ensure required margin <= equity_usdt * 0.20
+
+If any constraint fails → no trade.
+
+6. Bot State Machine and Controls
+6.1 Bot states
+
+BOOTING
+
+RUNNING
+
+PAUSED_MANUAL
+
+PAUSED_RISK_LIMIT
+
+ERROR
+
+SHUTDOWN
+
+6.2 Allowed user actions (dashboard)
+
+Pause trading (no new entries)
+
+Resume trading (only if risk limits allow)
+
+Emergency Flatten (close any open position immediately, cancel orders)
+
+Reset daily counters (admin only; normally auto-reset at day boundary)
+
+All actions must be authenticated and audit-logged.
+
+7. Dashboard Requirements (Front End)
+7.1 Primary screens
+
+Overview
+
+Bot status (RUNNING/PAUSED/ERROR)
+
+Heartbeat timestamp (last seen)
+
+Equity (USDT, ZAR equivalent)
+
+Today PnL
+
+Today max drawdown
+
+Open position (if any): symbol, side, entry, unrealized PnL, time-in-trade
+
+Risk limits: daily loss remaining, trades remaining, consecutive losses
+
+Trades
+
+Table with filters:
+
+date range, symbol, side, result (win/loss), reason (TP/SL/TIME_STOP)
+
+Columns:
+
+timestamp, symbol, side, entry, exit, pnl_usdt, pnl_pct, duration, fees, slippage_est, setup_id
+
+Signals / Market Events
+
+Show detected liquidation spikes:
+
+time, symbol, liq_usd, side, volume_mult, spread_bps, passed/failed, rejection reason
+
+Config
+
+Form-driven config editor with:
+
+validation, min/max constraints
+
+versioning (“publish new config”)
+
+rollback to previous version
+
+Feature flags:
+
+enable SOLUSDT, enable momentum variant (off)
+
+Logs
+
+Structured logs (filter by level: INFO/WARN/ERROR)
+
+Last error summary + stack trace snippet (server-side)
+
+Controls
+
+Pause / Resume
+
+Emergency Flatten
+
+“Run health check” (tests API connectivity and permissions)
+
+7.2 Daily 30-minute workflow (design requirement)
+
+Dashboard must support a checklist view:
+
+“All services online”
+
+“No risk limits hit”
+
+“No repeated errors”
+
+“PnL within expected band”
+
+“Open positions: none / manageable”
+
+“Last 24h trade count and win rate”
+
+“Notifications ok”
+
+7.3 UI/UX expectations
+
+Clean, low-noise
+
+Defaults to “Operations view”
+
+No charts required (optional)
+
+Mobile responsive (nice-to-have)
+
+8. API Contract (bot-service)
+8.1 Authentication
+
+JWT-based auth for dashboard
+
+Role: admin only (Phase 1)
+
+8.2 Endpoints (minimum)
+
+GET /api/health
+
+GET /api/state
+
+GET /api/metrics/today
+
+GET /api/trades?from=&to=&symbol=
+
+GET /api/events?from=&to=&symbol=
+
+GET /api/config/current
+
+POST /api/config/publish (admin)
+
+POST /api/control/pause
+
+POST /api/control/resume
+
+POST /api/control/flatten
+
+GET /api/logs?level=&limit=
+
+All POST actions must be idempotent and logged to risk_events.
+
+9. Notifications (Optional but recommended)
+9.1 Events to notify
+
+Bot entered ERROR
+
+Daily max loss hit (paused)
+
+Emergency flatten executed
+
+Consecutive loss pause triggered
+
+API disconnect > X seconds
+
+9.2 Channels
+
+Telegram bot webhook OR Slack webhook
+
+Keep it simple; no email required
+
+10. Reliability and Operational Controls
+10.1 Resilience
+
+Automatic websocket reconnect with exponential backoff
+
+If market data stream stale > stale_data_seconds (e.g., 10s) → pause entries
+
+Order placement retries (max 2) with idempotency keys
+
+10.2 Safety defaults
+
+On boot:
+
+set leverage to configured max (2x)
+
+fetch symbol filters (min qty, step size)
+
+validate configuration ranges
+
+run “dry-run” permission checks
+
+If any fail → state = ERROR, trading disabled.
+
+11. Deployment (Railway) and Local Dev
+11.1 Railway deployment
+
+bot-service: Dockerfile + start command
+
+web-dashboard: Next.js build + start
+
+11.2 Environments
+
+paper environment (Binance testnet / simulated trades)
+
+prod environment (live)
+
+11.3 Paper trading mode options
+
+Option A: Binance Futures testnet (preferred if stable)
+Option B: Simulated execution:
+
+record “paper fills” at mid-price +/- slippage
+
+compute fees
+
+update positions and PnL in DB
+
+Paper mode must be switchable via env var:
+
+TRADING_MODE=paper|live
+
+12. Config Schema (Provide as JSON)
+
+Example bot_config:
+
+{
+  "version": 1,
+  "mode": "paper",
+  "symbols": ["BTCUSDT", "ETHUSDT"],
+  "leverage": 2,
+  "risk": {
+    "risk_per_trade_pct": 0.0025,
+    "daily_max_loss_pct": 0.015,
+    "max_trades_per_day": 10,
+    "max_consecutive_losses": 3,
+    "pause_after_consecutive_losses_minutes": 60,
+    "max_margin_per_trade_pct": 0.20
+  },
+  "signal": {
+    "liq_window_seconds": 60,
+    "min_liq_usd": {
+      "BTCUSDT": 2500000,
+      "ETHUSDT": 1250000
+    },
+    "volume_lookback": 20,
+    "volume_mult": 2.0,
+    "exhaustion_candles": 2,
+    "max_spread_bps": {
+      "BTCUSDT": 3,
+      "ETHUSDT": 4
+    },
+    "symbol_cooldown_seconds": 300
+  },
+  "execution": {
+    "tp_pct": 0.0035,
+    "sl_pct": 0.0045,
+    "time_stop_seconds": 150,
+    "entry_fill_timeout_ms": 800,
+    "use_market_if_not_filled": true
+  },
+  "feature_flags": {
+    "enable_sol": false,
+    "enable_momentum_variant": false
+  }
+}
+
+13. Acceptance Criteria (What “Done” Means)
+13.1 Functional
+
+Bot connects to liquidation stream and logs spikes
+
+Bot places paper trades correctly and exits via TP/SL/time stop
+
+Risk governors reliably pause trading
+
+Dashboard shows:
+
+live status, last heartbeat
+
+trades table
+
+events and rejection reasons
+
+config editor with publish/rollback
+
+pause/resume/flatten controls
+
+13.2 Non-functional
+
+Bot survives websocket disconnects without crashing
+
+No secrets leak to client
+
+Config validation prevents dangerous settings (e.g., leverage > 3x)
+
+All trading actions audit logged
+
+Daily reset works on UTC+2 (Africa/Johannesburg) or UTC with clear display
+
+14. Implementation Notes (Guidance to Replit)
+14.1 Tech stack (recommended)
+
+bot-service: Python (FastAPI)
+
+websocket client for Binance
+
+PostgreSQL via SQLAlchemy
+
+background worker for strategy loop
+
+dashboard: Next.js
+
+server-side API calls
+
+Auth + protected routes
+
+Clean ops UI
+
+Alternative: Node/TypeScript for bot-service is acceptable if dev prefers.
+
+14.2 Code quality
+
+Feature flags and config versioning are mandatory
+
+Unit tests for:
+
+sizing function
+
+risk governor
+
+liquidation spike detector
+
+Structured logging (JSON logs)
+
+15. Operating Model (Your 30-minute check)
+
+Daily you should see, at a glance:
+
+“RUNNING” + heartbeat fresh
+
+PnL within band
+
+drawdown not creeping up
+
+risk limits not near breach
+
+no open positions stuck
+
+no recurring errors
+
+If anything red-flags:
+
+hit “PAUSE” or “FLATTEN”
+
+investigate logs

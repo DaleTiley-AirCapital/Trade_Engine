@@ -1,0 +1,139 @@
+Bid/ask is exactly why we trade only BTC/ETH and why the bot has spread filters + small targets. You’re right: if you buy, you lift the ask; if you sell, you hit the bid. That “crossing the spread” is a real cost and it can kill small-TP systems if you don’t design for it.
+
+Here’s how the spec handles it, and what to tighten so it actually works:
+
+How we “capture reversion” despite bid/ask
+
+There are only three viable execution approaches:
+
+A. Limit-first entry + limit-first exit (preferred)
+
+If going LONG:
+
+Entry: place a LIMIT buy at (best_bid or best_bid + 1 tick) so you’re not paying full ask.
+
+Exit (TP): place a LIMIT sell at your TP price (you’ll be the ask).
+
+If going SHORT:
+
+Entry: place a LIMIT sell at (best_ask or best_ask – 1 tick).
+
+Exit: LIMIT buy back at TP.
+
+This reduces spread cost materially. The trade-off is missed fills, which is fine because missing trades is cheaper than bad fills.
+
+B. “Limit-to-market” (what I specified)
+
+You try to get filled with a limit near the touch.
+
+If not filled quickly (e.g., 500–800ms), you flip to market to avoid missing the move.
+
+This is a good compromise: most fills happen on the limit; market is only a fallback.
+
+C. Pure market execution (avoid)
+
+Fast but you pay spread and extra slippage.
+
+With small TP targets it turns expectancy negative.
+
+The spread cost must be explicitly accounted for
+
+In the bot, every trade must calculate:
+
+entry_spread_bps at fill time
+
+exit_spread_bps at exit time
+
+fees_bps (maker/taker)
+
+and enforce: Expected edge > (spread + fees + slippage buffer)
+
+Practical rule for your config:
+
+Keep max_spread_bps tight:
+
+BTC: <= 2 bps
+
+ETH: <= 3–4 bps
+
+TP must exceed all-in friction. With taker fees you can easily burn 4–10 bps per round trip.
+That’s why:
+
+you keep pairs ultra-liquid
+
+you use limit-first logic
+
+you use small leverage
+
+you run a time stop to avoid chop
+
+Update to the spec you should add (important)
+
+Add this to the Confirmation Layer:
+
+min_expected_edge_bps = 8 (start conservative)
+
+Compute estimated friction:
+
+friction_bps = entry_spread_bps + exit_spread_bps + fees_bps + slippage_buffer_bps
+
+Only trade if:
+
+expected_reversion_bps >= friction_bps + min_expected_edge_bps
+
+(Where expected_reversion_bps can be approximated from how far price deviated from VWAP or from the impulse move size.)
+
+This prevents “death by spread”.
+
+Yes — but you should make it explicit.
+The spec already includes TRADING_MODE=paper|live, and it defines paper mode options. What it doesn’t do (yet) is hard-code “paper for 14 days then allow live”. You should add that rule so the dev doesn’t interpret it loosely.
+
+Add this to the spec (copy/paste)
+
+Paper trading requirement
+
+The system must support TRADING_MODE=paper where:
+
+no live orders are sent to Binance
+
+trades are simulated using:
+
+entry/exit at mid_price ± slippage_bps OR
+
+a fill model using best bid/ask snapshots
+
+fees are simulated using configured maker/taker rates
+
+all risk governors still apply exactly the same
+
+all trades/events are stored in DB
+
+Mandatory 14-day paper run
+
+Add a config value: paper_min_days = 14
+
+When TRADING_MODE=live is requested, bot must:
+
+check a stored paper_start_timestamp
+
+verify now - paper_start_timestamp >= 14 days
+
+verify at least min_paper_trades (e.g., 50) have occurred
+
+verify no critical errors in last 48 hours
+
+otherwise refuse to start in live mode and remain PAUSED_MANUAL with an explicit reason shown on the dashboard.
+
+Why this matters
+
+It forces discipline and prevents you from going live because you had a good weekend of paper results.
+
+Quick edits you should make before sending to Replit
+
+Add these bullets to your spec:
+
+Execution must be limit-first (entry and TP), with market fallback only for SL/time-stop or if entry_fill_timeout_ms expires.
+
+Spread/fees gate (min_expected_edge_bps) must be passed before any trade.
+
+Paper mode is mandatory for 14 days with a “live enablement checklist” enforced by code.
