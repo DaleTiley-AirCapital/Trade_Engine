@@ -40,6 +40,7 @@ export class BinanceWebSocket extends EventEmitter {
   // Price cache for fast access
   private prices: Map<string, number> = new Map();
   private bookTickers: Map<string, BookTickerData> = new Map();
+  private priceHistory: Map<string, { price: number; timestamp: number }[]> = new Map();
   
   constructor(symbols: string[] = ["BTCUSDT", "ETHUSDT"]) {
     super();
@@ -129,6 +130,17 @@ export class BinanceWebSocket extends EventEmitter {
         timestamp: payload.T,
       };
       this.prices.set(trade.symbol, trade.price);
+      
+      // Store price history for momentum calculation
+      const history = this.priceHistory.get(trade.symbol) || [];
+      history.push({ price: trade.price, timestamp: trade.timestamp });
+      // Keep last 5 minutes of history
+      const cutoff = Date.now() - 5 * 60 * 1000;
+      while (history.length > 0 && history[0].timestamp < cutoff) {
+        history.shift();
+      }
+      this.priceHistory.set(trade.symbol, history);
+      
       this.emit("trade", trade);
     }
     
@@ -161,6 +173,76 @@ export class BinanceWebSocket extends EventEmitter {
     if (!ticker) return 999;
     const midPrice = (ticker.bidPrice + ticker.askPrice) / 2;
     return ((ticker.askPrice - ticker.bidPrice) / midPrice) * 10000;
+  }
+  
+  // Get price change percentage over the last N seconds
+  getPriceDelta(symbol: string, seconds: number): number {
+    const history = this.priceHistory.get(symbol) || [];
+    if (history.length < 2) return 0;
+    
+    const now = Date.now();
+    const cutoff = now - seconds * 1000;
+    
+    // Find the oldest price within the window
+    let oldestPrice: number | null = null;
+    for (const entry of history) {
+      if (entry.timestamp >= cutoff) {
+        oldestPrice = entry.price;
+        break;
+      }
+    }
+    
+    if (!oldestPrice) {
+      // Use the first available price if nothing in window
+      oldestPrice = history[0].price;
+    }
+    
+    const currentPrice = history[history.length - 1].price;
+    return ((currentPrice - oldestPrice) / oldestPrice) * 100;
+  }
+  
+  // Count "exhaustion candles" - approximated by price reversals
+  // This is a simplified version: counts how many times price direction changed
+  getExhaustionCandles(symbol: string): number {
+    const history = this.priceHistory.get(symbol) || [];
+    if (history.length < 3) return 0;
+    
+    // Look at last 60 seconds of data, sample every ~20 seconds
+    const now = Date.now();
+    const samples: number[] = [];
+    const intervals = [0, 20000, 40000, 60000];
+    
+    for (const offset of intervals) {
+      const targetTime = now - offset;
+      let closest: { price: number; timestamp: number } | null = null;
+      let minDiff = Infinity;
+      
+      for (const entry of history) {
+        const diff = Math.abs(entry.timestamp - targetTime);
+        if (diff < minDiff) {
+          minDiff = diff;
+          closest = entry;
+        }
+      }
+      
+      if (closest && minDiff < 10000) {
+        samples.push(closest.price);
+      }
+    }
+    
+    if (samples.length < 3) return 0;
+    
+    // Count direction reversals (exhaustion indicator)
+    let reversals = 0;
+    for (let i = 2; i < samples.length; i++) {
+      const prev = samples[i - 1] - samples[i - 2];
+      const curr = samples[i] - samples[i - 1];
+      if ((prev > 0 && curr < 0) || (prev < 0 && curr > 0)) {
+        reversals++;
+      }
+    }
+    
+    return reversals;
   }
   
   private startPingInterval() {

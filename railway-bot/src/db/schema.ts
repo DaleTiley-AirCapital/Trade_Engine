@@ -59,6 +59,13 @@ export const marketEvents = pgTable("market_events", {
   liquidationSide: text("liquidation_side").notNull(),
   volumeMult: real("volume_mult").notNull(),
   spreadBps: real("spread_bps").notNull(),
+  priceDelta: real("price_delta").notNull().default(0),
+  exhaustionCandles: integer("exhaustion_candles").notNull().default(0),
+  liqSizeOk: boolean("liq_size_ok").notNull().default(false),
+  volumeOk: boolean("volume_ok").notNull().default(false),
+  spreadOk: boolean("spread_ok").notNull().default(false),
+  momentumOk: boolean("momentum_ok").notNull().default(false),
+  exhaustionOk: boolean("exhaustion_ok").notNull().default(false),
   passed: boolean("passed").notNull().default(false),
   rejectionReason: text("rejection_reason"),
 });

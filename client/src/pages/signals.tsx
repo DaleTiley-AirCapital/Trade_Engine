@@ -69,6 +69,15 @@ interface SignalCardProps {
   event: MarketEvent;
 }
 
+function CriteriaCheck({ ok, label }: { ok: boolean; label: string }) {
+  return (
+    <span className={cn("flex items-center gap-1", ok ? "text-success" : "text-destructive")}>
+      {ok ? <CheckCircle2 className="h-3 w-3" /> : <XCircle className="h-3 w-3" />}
+      {label}
+    </span>
+  );
+}
+
 function SignalCard({ event }: SignalCardProps) {
   const isPassed = event.passed;
 
@@ -116,10 +125,19 @@ function SignalCard({ event }: SignalCardProps) {
               <span className="font-mono">{formatLiquidation(event.liquidationUsd)}</span>
               <span>Volume: {event.volumeMult.toFixed(1)}x</span>
               <span>Spread: {event.spreadBps.toFixed(1)} bps</span>
+              <span>Delta: {event.priceDelta.toFixed(2)}%</span>
+              <span>Exhaustion: {event.exhaustionCandles}</span>
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+              <CriteriaCheck ok={event.liqSizeOk} label="Size" />
+              <CriteriaCheck ok={event.volumeOk} label="Volume" />
+              <CriteriaCheck ok={event.spreadOk} label="Spread" />
+              <CriteriaCheck ok={event.momentumOk} label="Momentum" />
+              <CriteriaCheck ok={event.exhaustionOk} label="Exhaustion" />
             </div>
             {!isPassed && event.rejectionReason && (
               <p className="mt-2 text-sm text-muted-foreground">
-                Reason: {event.rejectionReason}
+                {event.rejectionReason}
               </p>
             )}
           </div>

@@ -119,63 +119,98 @@ export class LiquidationReversionStrategy {
     const symbol = liq.symbol;
     if (!this.config.symbols.includes(symbol)) return;
     
-    // Calculate spread and volume FIRST so we can log them for all events
+    // Check cooldown first (don't log cooldown events)
+    const cooldownUntil = this.symbolCooldowns.get(symbol) || 0;
+    if (Date.now() < cooldownUntil) {
+      return; // Skip cooldown events entirely
+    }
+    
+    // ============================================
+    // CALCULATE ALL CRITERIA UPFRONT
+    // ============================================
+    
+    // 1. Spread check
     const spreadBps = this.ws.getSpreadBps(symbol);
+    const maxSpread = this.config.maxSpreadBps[symbol] || 4;
+    const spreadOk = spreadBps <= maxSpread;
+    
+    // 2. Volume multiplier check
     const avgVolume = this.getAverageVolume(symbol);
     const recentVolume = this.getRecentVolume(symbol, 60);
     const volumeMult = avgVolume > 0 ? recentVolume / avgVolume : 0;
+    const volumeOk = volumeMult >= this.config.volumeMult;
     
-    // Check cooldown
-    const cooldownUntil = this.symbolCooldowns.get(symbol) || 0;
-    if (Date.now() < cooldownUntil) {
-      await this.logMarketEvent(symbol, liq, false, "Symbol in cooldown", volumeMult, spreadBps);
-      return;
-    }
-    
-    // Check minimum liquidation size
+    // 3. Liquidation size check
     const minLiq = this.config.minLiqUsd[symbol] || 2000000;
-    if (liq.usdValue < minLiq) {
-      await this.logMarketEvent(symbol, liq, false, "Liquidation size below threshold", volumeMult, spreadBps);
-      return;
-    }
+    const liqSizeOk = liq.usdValue >= minLiq;
     
-    // Check spread
-    const maxSpread = this.config.maxSpreadBps[symbol] || 4;
-    if (spreadBps > maxSpread) {
-      await this.logMarketEvent(symbol, liq, false, "Spread too wide", volumeMult, spreadBps);
-      return;
-    }
+    // 4. Price momentum (delta) check - measure price change in last minute
+    const priceDelta = this.ws.getPriceDelta(symbol, 60);
+    const momentumOk = Math.abs(priceDelta) < 0.5; // Momentum slowing if delta < 0.5%
     
-    // Check volume multiplier
-    if (volumeMult < this.config.volumeMult) {
-      await this.logMarketEvent(symbol, liq, false, `Volume multiplier ${volumeMult.toFixed(2)}x below threshold`, volumeMult, spreadBps);
-      return;
-    }
+    // 5. Exhaustion candles check - count candles that failed to extend
+    const exhaustionCandles = this.ws.getExhaustionCandles(symbol);
+    const exhaustionOk = exhaustionCandles >= 1; // At least 1 exhaustion candle
     
-    // Check daily limits
-    if (this.todayTradeCount >= this.config.maxTradesPerDay) {
-      await this.logMarketEvent(symbol, liq, false, "Daily trade limit reached", volumeMult, spreadBps);
-      return;
-    }
-    
-    if (this.consecutiveLosses >= this.config.maxConsecutiveLosses) {
-      await this.logMarketEvent(symbol, liq, false, "Consecutive losses limit reached", volumeMult, spreadBps);
-      await this.updateBotState("PAUSED_RISK_LIMIT");
-      this.isPaused = true;
-      return;
-    }
-    
+    // ============================================
+    // CHECK DAILY LIMITS (separate from signal quality)
+    // ============================================
+    const dailyLimitOk = this.todayTradeCount < this.config.maxTradesPerDay;
+    const consecutiveLossOk = this.consecutiveLosses < this.config.maxConsecutiveLosses;
     const dailyLossPct = Math.abs(Math.min(0, this.todayPnl)) / this.equity;
-    if (dailyLossPct >= this.config.dailyMaxLossPct) {
-      await this.logMarketEvent(symbol, liq, false, "Daily loss limit reached", volumeMult, spreadBps);
-      await this.updateBotState("PAUSED_RISK_LIMIT");
-      this.isPaused = true;
+    const dailyLossOk = dailyLossPct < this.config.dailyMaxLossPct;
+    
+    // ============================================
+    // DETERMINE OVERALL PASS/FAIL
+    // ============================================
+    const signalQualityPassed = liqSizeOk && volumeOk && spreadOk && momentumOk && exhaustionOk;
+    const riskLimitsPassed = dailyLimitOk && consecutiveLossOk && dailyLossOk;
+    const allPassed = signalQualityPassed && riskLimitsPassed;
+    
+    // Build rejection reason listing all failures
+    const failures: string[] = [];
+    if (!liqSizeOk) failures.push(`Liq size $${(liq.usdValue/1000).toFixed(0)}K < $${(minLiq/1000000).toFixed(1)}M`);
+    if (!volumeOk) failures.push(`Volume ${volumeMult.toFixed(2)}x < ${this.config.volumeMult}x`);
+    if (!spreadOk) failures.push(`Spread ${spreadBps.toFixed(1)}bps > ${maxSpread}bps`);
+    if (!momentumOk) failures.push(`Momentum ${priceDelta.toFixed(2)}% still strong`);
+    if (!exhaustionOk) failures.push(`No exhaustion candles (${exhaustionCandles})`);
+    if (!dailyLimitOk) failures.push("Daily trade limit");
+    if (!consecutiveLossOk) failures.push("Consecutive losses limit");
+    if (!dailyLossOk) failures.push("Daily loss limit");
+    
+    const rejectionReason = failures.length > 0 ? failures.join("; ") : null;
+    
+    // ============================================
+    // LOG THE EVENT WITH ALL CRITERIA
+    // ============================================
+    await this.logMarketEvent(symbol, liq, allPassed, rejectionReason, {
+      volumeMult,
+      spreadBps,
+      priceDelta,
+      exhaustionCandles,
+      liqSizeOk,
+      volumeOk,
+      spreadOk,
+      momentumOk,
+      exhaustionOk,
+    });
+    
+    // Handle risk limit pausing
+    if (!riskLimitsPassed) {
+      if (!consecutiveLossOk || !dailyLossOk) {
+        await this.updateBotState("PAUSED_RISK_LIMIT");
+        this.isPaused = true;
+      }
+      return;
+    }
+    
+    // If signal quality failed, don't trade
+    if (!signalQualityPassed) {
       return;
     }
     
     // Signal passed! Execute trade
     logger.info(`SIGNAL PASSED: ${symbol} - Liq: $${(liq.usdValue / 1000000).toFixed(2)}M, Vol: ${volumeMult.toFixed(2)}x, Spread: ${spreadBps.toFixed(1)}bps`);
-    await this.logMarketEvent(symbol, liq, true, null, volumeMult, spreadBps);
     
     // Trade in opposite direction of liquidation
     const tradeSide = liq.side === "BUY" ? "SHORT" : "LONG";
@@ -382,15 +417,31 @@ export class LiquidationReversionStrategy {
     liq: LiquidationSignal,
     passed: boolean,
     rejectionReason: string | null,
-    volumeMult = 0,
-    spreadBps = 0
+    criteria: {
+      volumeMult: number;
+      spreadBps: number;
+      priceDelta: number;
+      exhaustionCandles: number;
+      liqSizeOk: boolean;
+      volumeOk: boolean;
+      spreadOk: boolean;
+      momentumOk: boolean;
+      exhaustionOk: boolean;
+    }
   ) {
     await db.insert(marketEvents).values({
       symbol,
       liquidationUsd: liq.usdValue,
       liquidationSide: liq.side === "BUY" ? "LONG" : "SHORT",
-      volumeMult,
-      spreadBps,
+      volumeMult: criteria.volumeMult,
+      spreadBps: criteria.spreadBps,
+      priceDelta: criteria.priceDelta,
+      exhaustionCandles: criteria.exhaustionCandles,
+      liqSizeOk: criteria.liqSizeOk,
+      volumeOk: criteria.volumeOk,
+      spreadOk: criteria.spreadOk,
+      momentumOk: criteria.momentumOk,
+      exhaustionOk: criteria.exhaustionOk,
       passed,
       rejectionReason,
     });
