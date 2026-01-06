@@ -1,0 +1,48 @@
+Starting Container
+npm warn config production Use `--omit=dev` instead.
+> liquidation-trading-bot@1.0.0 start
+> node dist/index.js
+[2026-01-06T15:19:11.083Z] [INFO] Starting Liquidation Reversion Trading Bot
+[2026-01-06T15:19:11.085Z] [INFO] Trading mode: PAPER
+Failed to write log to database: Error: Connection terminated due to connection timeout
+    at /app/node_modules/pg-pool/index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async log (/app/dist/services/logger.js:13:9) {
+  [cause]: Error: Connection terminated unexpectedly
+      at Connection.<anonymous> (/app/node_modules/pg/lib/client.js:136:73)
+      at Object.onceWrapper (node:events:633:28)
+      at Connection.emit (node:events:519:28)
+      at Socket.<anonymous> (/app/node_modules/pg/lib/connection.js:62:12)
+      at Socket.emit (node:events:519:28)
+      at TCP.<anonymous> (node:net:346:12)
+}
+}
+Failed to write log to database: Error: Connection terminated due to connection timeout
+    at /app/node_modules/pg-pool/index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async log (/app/dist/services/logger.js:13:9) {
+  [cause]: Error: Connection terminated unexpectedly
+      at Connection.<anonymous> (/app/node_modules/pg/lib/client.js:136:73)
+      at Object.onceWrapper (node:events:633:28)
+      at Connection.emit (node:events:519:28)
+      at Socket.<anonymous> (/app/node_modules/pg/lib/connection.js:62:12)
+      at Socket.emit (node:events:519:28)
+      at TCP.<anonymous> (node:net:346:12)
+[2026-01-06T15:19:13.100Z] [WARN] Could not load config from database, using defaults
+[2026-01-06T15:19:13.102Z] [INFO] Config loaded: BTCUSDT, ETHUSDT, Leverage: 2x
+[2026-01-06T15:19:13.816Z] [INFO] Binance WebSocket connected
+[2026-01-06T15:19:13.817Z] [INFO] Connected to Binance WebSocket
+[2026-01-06T15:19:13.818Z] [INFO] Starting Liquidation Reversion Strategy
+[2026-01-06T15:19:15.492Z] [ERROR] API request failed: /fapi/v1/leverage
+  Details: Error: Binance API error: {"code":-2015,"msg":"Invalid API-key, IP, or permissions for action"}
+[2026-01-06T15:19:15.493Z] [WARN] Failed to set leverage for BTCUSDT
+  Details: Error: Binance API error: {"code":-2015,"msg":"Invalid API-key, IP, or permissions for action"}
+[2026-01-06T15:19:15.735Z] [ERROR] API request failed: /fapi/v1/leverage
+  Details: Error: Binance API error: {"code":-2015,"msg":"Invalid API-key, IP, or permissions for action"}
+[2026-01-06T15:19:15.736Z] [WARN] Failed to set leverage for ETHUSDT
+  Details: Error: Binance API error: {"code":-2015,"msg":"Invalid API-key, IP, or permissions for action"}
+[2026-01-06T15:19:15.966Z] [ERROR] API request failed: /fapi/v2/balance
+  Details: Error: Binance API error: {"code":-2015,"msg":"Invalid API-key, IP, or permissions for action"}
+[2026-01-06T15:19:15.966Z] [WARN] Could not fetch initial balance, using default
+[2026-01-06T15:19:15.966Z] [INFO] Strategy started successfully
+[2026-01-06T15:19:15.967Z] [INFO] Bot is running. Waiting for liquidation signals...
