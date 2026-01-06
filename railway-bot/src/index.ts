@@ -6,7 +6,7 @@ import { BinanceAPI } from "./services/binance-api";
 import { LiquidationReversionStrategy } from "./strategies/liquidation-reversion";
 import { logger } from "./services/logger";
 import { db } from "./db";
-import { configs, botStates } from "./db/schema";
+import { configs, botStates, metrics } from "./db/schema";
 import { desc } from "drizzle-orm";
 
 async function main() {
@@ -20,6 +20,9 @@ async function main() {
     logger.error("BINANCE_API_KEY and BINANCE_API_SECRET are required");
     process.exit(1);
   }
+  
+  // Initialize database tables with defaults if empty
+  await initializeDatabase();
   
   // Get trading mode from database (set by dashboard toggle)
   let tradingMode = await getTradingModeFromDb();
@@ -135,6 +138,77 @@ async function loadConfig() {
     timeStopSeconds: 150,
     entryFillTimeoutMs: 800,
   };
+}
+
+async function initializeDatabase() {
+  try {
+    // Check if config exists, if not create default
+    const [existingConfig] = await db.select().from(configs).orderBy(desc(configs.id)).limit(1);
+    if (!existingConfig) {
+      logger.info("No config found, creating default configuration...");
+      await db.insert(configs).values({
+        version: 1,
+        mode: "paper",
+        symbols: "BTCUSDT,ETHUSDT",
+        leverage: 2,
+        riskPerTradePct: 0.0025,
+        dailyMaxLossPct: 0.015,
+        maxTradesPerDay: 10,
+        maxConsecutiveLosses: 3,
+        pauseAfterLossesMinutes: 60,
+        maxMarginPerTradePct: 0.20,
+        liqWindowSeconds: 60,
+        volumeLookback: 20,
+        volumeMult: 2.0,
+        exhaustionCandles: 2,
+        symbolCooldownSeconds: 300,
+        tpPct: 0.0035,
+        slPct: 0.0045,
+        timeStopSeconds: 150,
+        entryFillTimeoutMs: 800,
+        useMarketIfNotFilled: true,
+        enableSol: false,
+        enableMomentumVariant: false,
+      });
+      logger.info("Default config created successfully");
+    }
+
+    // Check if metrics exists, if not create default
+    const [existingMetrics] = await db.select().from(metrics).orderBy(desc(metrics.id)).limit(1);
+    if (!existingMetrics) {
+      logger.info("No metrics found, creating initial metrics...");
+      const defaultEquity = 1400;
+      await db.insert(metrics).values({
+        equityUsdt: defaultEquity,
+        equityZar: defaultEquity * 18.5,
+        todayPnlUsdt: 0,
+        todayPnlPct: 0,
+        todayMaxDrawdownPct: 0,
+        dailyLossRemaining: defaultEquity * 0.015,
+        tradesRemaining: 10,
+        consecutiveLosses: 0,
+        todayTradeCount: 0,
+        todayWinCount: 0,
+        todayLossCount: 0,
+        winRate: 0,
+      });
+      logger.info("Initial metrics created successfully");
+    }
+
+    // Check if bot_states exists, if not create default
+    const [existingState] = await db.select().from(botStates).orderBy(desc(botStates.id)).limit(1);
+    if (!existingState) {
+      logger.info("No bot state found, creating default state...");
+      await db.insert(botStates).values({
+        status: "RUNNING",
+        tradingMode: "paper",
+        paperTradesCount: 0,
+      });
+      logger.info("Default bot state created successfully");
+    }
+  } catch (err) {
+    logger.warn("Database initialization check failed (tables may not exist yet)", String(err));
+  }
 }
 
 main().catch((err) => {
