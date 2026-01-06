@@ -64,26 +64,33 @@ export class LiquidationReversionStrategy {
   
   async start() {
     logger.info("Starting Liquidation Reversion Strategy");
+    logger.info(`Mode: ${this.isLive ? "LIVE TRADING" : "PAPER TRADING (no real orders)"}`);
     
     // Update bot state
     await this.updateBotState("RUNNING");
     await this.updateHealth(true, true, true);
     
-    // Set leverage on all symbols
-    for (const symbol of this.config.symbols) {
-      try {
-        await this.api.setLeverage(symbol, this.config.leverage);
-      } catch (err) {
-        logger.warn(`Failed to set leverage for ${symbol}`, String(err));
+    // In paper mode, skip API calls that require trading permissions
+    if (this.isLive) {
+      // Set leverage on all symbols
+      for (const symbol of this.config.symbols) {
+        try {
+          await this.api.setLeverage(symbol, this.config.leverage);
+        } catch (err) {
+          logger.warn(`Failed to set leverage for ${symbol}`, String(err));
+        }
       }
-    }
-    
-    // Get initial equity
-    try {
-      this.equity = await this.api.getUsdtBalance();
-      logger.info(`Starting equity: $${this.equity.toFixed(2)}`);
-    } catch (err) {
-      logger.warn("Could not fetch initial balance, using default");
+      
+      // Get initial equity from account
+      try {
+        this.equity = await this.api.getUsdtBalance();
+        logger.info(`Starting equity: $${this.equity.toFixed(2)}`);
+      } catch (err) {
+        logger.warn("Could not fetch initial balance, using default");
+      }
+    } else {
+      // Paper mode - use default equity
+      logger.info(`[PAPER] Using simulated equity: $${this.equity.toFixed(2)}`);
     }
     
     // Listen for liquidation events
@@ -190,21 +197,35 @@ export class LiquidationReversionStrategy {
     
     try {
       const startTime = Date.now();
+      let avgPrice = price;
+      let executedQty = quantity;
+      let slippage = 0;
       
-      // Use market order for fastest execution
-      const order = await this.api.marketOrder(symbol, orderSide, quantity);
+      // In paper mode, simulate the trade instead of executing
+      if (!this.isLive) {
+        // Simulate small slippage (0.01-0.03%)
+        slippage = 0.01 + Math.random() * 0.02;
+        avgPrice = side === "LONG" 
+          ? price * (1 + slippage / 100)
+          : price * (1 - slippage / 100);
+        logger.info(`[PAPER] Simulated ${side} ${symbol} @ ${avgPrice.toFixed(2)} (simulated slippage: ${slippage.toFixed(3)}%)`);
+      } else {
+        // Live mode - execute real order
+        const order = await this.api.marketOrder(symbol, orderSide, quantity);
+        avgPrice = order.avgPrice;
+        executedQty = order.executedQty;
+        slippage = Math.abs(order.avgPrice - price) / price * 100;
+      }
       
       const executionTime = Date.now() - startTime;
-      const slippage = Math.abs(order.avgPrice - price) / price * 100;
-      
-      logger.info(`Trade opened: ${side} ${symbol} @ ${order.avgPrice} (slippage: ${slippage.toFixed(3)}%, exec: ${executionTime}ms)`);
+      logger.info(`Trade opened: ${side} ${symbol} @ ${avgPrice.toFixed(2)} (slippage: ${slippage.toFixed(3)}%, exec: ${executionTime}ms)`);
       
       // Record trade in database
       const [newTrade] = await db.insert(trades).values({
         symbol,
         side,
-        entryPrice: order.avgPrice,
-        quantity: order.executedQty,
+        entryPrice: avgPrice,
+        quantity: executedQty,
         isOpen: true,
         setupId: `liq_${Date.now()}`,
         slippageEst: slippage,
@@ -212,7 +233,7 @@ export class LiquidationReversionStrategy {
       
       this.openTrade = {
         symbol,
-        entryPrice: order.avgPrice,
+        entryPrice: avgPrice,
         side,
         entryTime: Date.now(),
         tradeId: newTrade.id,
@@ -268,21 +289,29 @@ export class LiquidationReversionStrategy {
     const orderSide = side === "LONG" ? "SELL" : "BUY";
     
     try {
-      // Get current position
-      const positions = await this.api.getPositions();
-      const pos = positions.find(p => p.symbol === symbol);
+      const exitPrice = this.ws.getPrice(symbol) || entryPrice;
+      let quantity = 0;
       
-      if (pos) {
-        const quantity = Math.abs(pos.positionAmt);
-        await this.api.marketOrder(symbol, orderSide, quantity);
+      // In paper mode, simulate the exit
+      if (!this.isLive) {
+        // Use the quantity from when we entered
+        quantity = (this.equity * this.config.riskPerTradePct) / (entryPrice * this.config.slPct);
+        logger.info(`[PAPER] Simulated exit ${side} ${symbol} @ ${exitPrice.toFixed(2)}`);
+      } else {
+        // Live mode - execute real order
+        const positions = await this.api.getPositions();
+        const pos = positions.find(p => p.symbol === symbol);
+        
+        if (pos) {
+          quantity = Math.abs(pos.positionAmt);
+          await this.api.marketOrder(symbol, orderSide, quantity);
+        }
       }
       
-      const exitPrice = this.ws.getPrice(symbol) || entryPrice;
       const pnlPct = side === "LONG"
         ? (exitPrice - entryPrice) / entryPrice
         : (entryPrice - exitPrice) / entryPrice;
       
-      const quantity = pos?.positionAmt ? Math.abs(pos.positionAmt) : 0;
       const pnlUsdt = entryPrice * quantity * pnlPct;
       const duration = Math.floor((Date.now() - entryTime) / 1000);
       const fees = Math.abs(pnlUsdt) * 0.04;
@@ -459,7 +488,14 @@ export class LiquidationReversionStrategy {
   
   async flatten() {
     logger.warn("EMERGENCY FLATTEN - Closing all positions");
-    await this.api.closeAllPositions();
+    
+    // In paper mode, just exit any simulated trade
+    if (this.isLive) {
+      await this.api.closeAllPositions();
+    } else {
+      logger.info("[PAPER] Simulated flatten - no real positions to close");
+    }
+    
     if (this.openTrade) {
       await this.exitTrade("FLATTEN");
     }

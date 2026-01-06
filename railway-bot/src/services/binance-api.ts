@@ -40,11 +40,12 @@ export class BinanceAPI {
     this.apiKey = apiKey;
     this.apiSecret = apiSecret;
     this.isPaper = isPaper;
-    
-    // Use testnet for paper trading
-    if (isPaper) {
-      this.baseUrl = "https://testnet.binancefuture.com";
-    }
+    // Always use production API for real market data
+    // Paper mode will skip actual order execution
+  }
+  
+  get paperMode(): boolean {
+    return this.isPaper;
   }
   
   private sign(params: Record<string, string | number>): string {
